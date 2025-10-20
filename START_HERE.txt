@@ -1,0 +1,48 @@
+╔═══════════════════════════════════════════════════════════════╗
+║                   RETRO CAPTURE SYSTEM                        ║
+║           Multi-Phone Synchronized Video Capture              ║
+╚═══════════════════════════════════════════════════════════════╝
+
+👋 START HERE!
+
+This folder contains everything you need to capture synchronized
+videos from up to 100 phones at the same time.
+
+📚 WHAT TO READ:
+
+1. QUICKSTART.md  ← Read this FIRST (5 simple steps)
+2. README.md      ← Full instructions and troubleshooting  
+3. HOW_IT_WORKS.md ← Understand how the system works
+
+🎬 WHAT IT DOES:
+
+• All phones record continuously (saving last 5 seconds)
+• Master phone presses a button
+• ALL phones save their last 5 seconds at the same time
+• Videos auto-upload to Amazon S3 cloud storage
+• A beep sound helps you sync videos later
+
+📁 WHAT'S IN THIS FOLDER:
+
+server.js         - The brain that coordinates all phones
+public/           - The website that runs on each phone
+  ├── index.html  - What you see on screen
+  └── app.js      - The recording logic
+package.json      - List of required software
+.env.example      - Configuration template
+
+🚀 QUICK START:
+
+1. Install Node.js from https://nodejs.org/
+2. Open Terminal and run:
+   cd ~/Desktop/retro-capture
+   npm install
+3. Set up AWS S3 (see README.md)
+4. Run: npm start
+5. On phones, go to: http://YOUR_COMPUTER_IP:3000
+
+📞 NEED HELP?
+
+Check README.md for troubleshooting!
+
+Happy capturing! 🎥
