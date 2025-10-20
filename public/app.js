@@ -123,19 +123,24 @@ async function startContinuousRecording() {
                 timestamp: Date.now()
             });
 
-            // Keep only the last 5 seconds
-            // Remove chunks older than 5 seconds
+            // Keep only the last 6 seconds
+            // Remove chunks older than 6 seconds
             const cutoffTime = Date.now() - BUFFER_DURATION;
             recordedChunks = recordedChunks.filter(chunk => chunk.timestamp > cutoffTime);
 
             console.log(`📼 Buffer: ${recordedChunks.length} chunks (last ${BUFFER_DURATION/1000}s)`);
+
+            // Update countdown - show how many seconds until ready
+            updateBufferCountdown();
         }
     };
 
     // Start recording in chunks
     mediaRecorder.start(CHUNK_DURATION); // Get a chunk every 1 second
     console.log('✅ Continuous recording started');
-    updateStatus('Recording buffer active');
+
+    // Start countdown to show when buffer is ready
+    startBufferCountdown();
 }
 
 // === AUDIO SYNC TONE ===
@@ -324,9 +329,19 @@ async function saveVideo(captureData) {
         recordedChunks = [];
         mediaRecorder.start(CHUNK_DURATION);
 
+        // Restart the countdown for next capture
+        startBufferCountdown();
+
     } catch (error) {
         console.error('❌ Save failed:', error);
         showMessage('❌ Upload failed. Check console for details.');
+
+        // Still restart recording on error
+        recordedChunks = [];
+        if (mediaRecorder.state !== 'recording') {
+            mediaRecorder.start(CHUNK_DURATION);
+        }
+        startBufferCountdown();
     } finally {
         isUploading = false;
     }
@@ -438,6 +453,37 @@ function updateFlashPhonesList(phones) {
     });
 
     console.log(`📋 Updated flash phones dropdown: ${phones.length} phones`);
+}
+
+// === BUFFER COUNTDOWN ===
+function startBufferCountdown() {
+    // Disable capture button initially
+    if (myRole === 'master') {
+        captureBtn.disabled = true;
+    }
+    updateStatus('Building buffer... Please wait');
+}
+
+function updateBufferCountdown() {
+    const secondsRecorded = recordedChunks.length;
+    const secondsNeeded = Math.ceil(BUFFER_DURATION / 1000);
+
+    if (secondsRecorded < secondsNeeded) {
+        // Still building buffer
+        const remaining = secondsNeeded - secondsRecorded;
+        updateStatus(`Building buffer... ${remaining}s until ready`);
+        if (myRole === 'master') {
+            captureBtn.disabled = true;
+        }
+    } else {
+        // Buffer is ready!
+        if (myRole === 'master') {
+            updateStatus('Ready to capture!');
+            captureBtn.disabled = false;
+        } else {
+            updateStatus('Waiting for master to trigger capture...');
+        }
+    }
 }
 
 // Handle errors
