@@ -52,6 +52,7 @@ const s3Client = new S3Client({
 let masterClient = null; // The first phone that connects (the boss)
 let clients = new Map(); // All connected phones
 let sessionId = Date.now(); // Unique ID for this capture session
+let captureCounter = 0; // Counter for sequential folder numbering
 
 console.log('🎥 Retro Capture Server Starting...');
 console.log(`📦 S3 Bucket: ${S3_BUCKET_NAME}`);
@@ -128,8 +129,9 @@ io.on('connection', (socket) => {
       const captureTime = Date.now();
       const captureDate = new Date(captureTime);
 
-      // Create human-readable folder name: YYYYMMDD_HHMMSS_<timestamp>
-      // Example: 20251020_152430_1729442670000
+      // Create human-readable folder name with sequential counter
+      // Format: XX_YYYYMMDD_HHMMSS_timestamp
+      // Example: 00_20251020_152430_1729442670000
       const year = captureDate.getFullYear();
       const month = String(captureDate.getMonth() + 1).padStart(2, '0');
       const day = String(captureDate.getDate()).padStart(2, '0');
@@ -137,10 +139,14 @@ io.on('connection', (socket) => {
       const minutes = String(captureDate.getMinutes()).padStart(2, '0');
       const seconds = String(captureDate.getSeconds()).padStart(2, '0');
 
-      const folderName = `${year}${month}${day}_${hours}${minutes}${seconds}_${captureTime}`;
+      // Increment counter and pad to 2 digits (00, 01, 02, etc.)
+      const counterStr = String(captureCounter).padStart(2, '0');
+      captureCounter++;
+
+      const folderName = `${counterStr}_${year}${month}${day}_${hours}${minutes}${seconds}_${captureTime}`;
 
       console.log(`🔴 CAPTURE TRIGGERED at ${captureDate.toLocaleString()}`);
-      console.log(`   Folder: ${folderName}`);
+      console.log(`   Folder: ${folderName} (capture #${captureCounter})`);
       console.log(`   Broadcasting to ${clients.size} phones`);
 
       // Tell ALL phones to save their last 6 seconds RIGHT NOW
