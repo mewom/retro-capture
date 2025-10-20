@@ -7,7 +7,7 @@ require('dotenv').config();
 const express = require('express');
 const http = require('http');
 const socketIO = require('socket.io');
-const fetch = require('node-fetch');
+const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const cors = require('cors');
 const path = require('path');
 
@@ -26,10 +26,21 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.static('public')); // Serve the website files
 
-// Cloudflare R2 Configuration
-const CLOUDFLARE_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID;
-const CLOUDFLARE_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN;
+// Cloudflare R2 Configuration (S3-compatible)
 const R2_BUCKET_NAME = process.env.R2_BUCKET_NAME || 'retro-capture-videos';
+const R2_ENDPOINT = process.env.R2_ENDPOINT;
+const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID;
+const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY;
+
+// Create S3 client configured for Cloudflare R2
+const s3Client = new S3Client({
+  region: 'auto',
+  endpoint: R2_ENDPOINT,
+  credentials: {
+    accessKeyId: R2_ACCESS_KEY_ID,
+    secretAccessKey: R2_SECRET_ACCESS_KEY
+  }
+});
 
 // Keep track of connected phones
 let masterClient = null; // The first phone that connects (the boss)
@@ -124,42 +135,28 @@ app.post('/upload', async (req, res) => {
     const base64Data = videoData.replace(/^data:video\/webm;base64,/, '');
     const videoBuffer = Buffer.from(base64Data, 'base64');
 
-    // Upload video to Cloudflare R2 using their API
+    // Upload video to R2 using S3-compatible API
     const videoKey = `videos/${metadata.sessionId}/${metadata.filename}`;
-    const uploadUrl = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/r2/buckets/${R2_BUCKET_NAME}/objects/${videoKey}`;
-
-    const videoResponse = await fetch(uploadUrl, {
-      method: 'PUT',
-      headers: {
-        'Authorization': `Bearer ${CLOUDFLARE_API_TOKEN}`,
-        'Content-Type': 'video/webm'
-      },
-      body: videoBuffer
+    const uploadCommand = new PutObjectCommand({
+      Bucket: R2_BUCKET_NAME,
+      Key: videoKey,
+      Body: videoBuffer,
+      ContentType: 'video/webm'
     });
 
-    if (!videoResponse.ok) {
-      throw new Error(`R2 upload failed: ${videoResponse.status} ${await videoResponse.text()}`);
-    }
-
+    await s3Client.send(uploadCommand);
     console.log(`✅ Video uploaded: ${metadata.filename}`);
 
     // Upload metadata as JSON
     const metadataKey = `videos/${metadata.sessionId}/${metadata.filename}.json`;
-    const metadataUrl = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/r2/buckets/${R2_BUCKET_NAME}/objects/${metadataKey}`;
-
-    const metadataResponse = await fetch(metadataUrl, {
-      method: 'PUT',
-      headers: {
-        'Authorization': `Bearer ${CLOUDFLARE_API_TOKEN}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(metadata, null, 2)
+    const metadataCommand = new PutObjectCommand({
+      Bucket: R2_BUCKET_NAME,
+      Key: metadataKey,
+      Body: JSON.stringify(metadata, null, 2),
+      ContentType: 'application/json'
     });
 
-    if (!metadataResponse.ok) {
-      throw new Error(`Metadata upload failed: ${metadataResponse.status} ${await metadataResponse.text()}`);
-    }
-
+    await s3Client.send(metadataCommand);
     console.log(`✅ Metadata uploaded: ${metadata.filename}.json`);
 
     res.json({
