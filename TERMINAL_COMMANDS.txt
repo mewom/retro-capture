@@ -1,0 +1,88 @@
+═══════════════════════════════════════════════════════════
+           EXACT TERMINAL COMMANDS TO RUN
+═══════════════════════════════════════════════════════════
+
+📝 IMPORTANT: Replace YOUR_USERNAME with your GitHub username!
+
+───────────────────────────────────────────────────────────
+STEP 1: Go to GitHub and create new repo
+───────────────────────────────────────────────────────────
+
+Open browser: https://github.com/new
+
+Repository name: retro-capture
+Public: YES
+Don't add README or .gitignore
+Click "Create repository"
+
+───────────────────────────────────────────────────────────
+STEP 2: Push code to GitHub
+───────────────────────────────────────────────────────────
+
+Copy and paste these commands ONE AT A TIME:
+
+cd ~/Desktop/retro-capture
+
+git remote add origin https://github.com/YOUR_USERNAME/retro-capture.git
+
+git push -u origin main
+
+(Replace YOUR_USERNAME with your actual GitHub username!)
+
+───────────────────────────────────────────────────────────
+If it asks for credentials:
+───────────────────────────────────────────────────────────
+
+Username: your_github_username
+Password: Use a Personal Access Token (NOT your password!)
+
+Get token here: https://github.com/settings/tokens
+- Click "Generate new token (classic)"
+- Name it "Retro Capture"
+- Check "repo" box
+- Generate and copy it
+- Paste as password
+
+───────────────────────────────────────────────────────────
+STEP 3: Deploy on Render.com
+───────────────────────────────────────────────────────────
+
+1. Go to: https://render.com
+2. Sign up with GitHub
+3. Click "New +" → "Web Service"
+4. Connect your retro-capture repository
+5. Fill in:
+   - Name: retro-capture
+   - Build Command: npm install
+   - Start Command: npm start
+6. Add Environment Variables (see DEPLOYMENT.md)
+7. Click "Create Web Service"
+8. Wait 3-5 minutes
+9. Done! You'll get a URL
+
+───────────────────────────────────────────────────────────
+STEP 4: Set up AWS S3 (if you haven't)
+───────────────────────────────────────────────────────────
+
+1. Go to: https://aws.amazon.com/s3/
+2. Create bucket (name: retro-capture-videos-2024)
+3. Get credentials:
+   - AWS Console → Your name → Security credentials
+   - Create access key
+   - Save Access Key ID and Secret Access Key
+4. Add these to Render environment variables
+
+───────────────────────────────────────────────────────────
+✅ DONE!
+───────────────────────────────────────────────────────────
+
+Your app will be live at:
+https://retro-capture-XXXX.onrender.com
+
+Share that URL with anyone!
+They open it on their phone and start capturing!
+
+═══════════════════════════════════════════════════════════
+
+For full instructions with explanations, see:
+→ DEPLOYMENT.md

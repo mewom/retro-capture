@@ -7,7 +7,7 @@ require('dotenv').config();
 const express = require('express');
 const http = require('http');
 const socketIO = require('socket.io');
-const AWS = require('aws-sdk');
+const fetch = require('node-fetch');
 const cors = require('cors');
 const path = require('path');
 
@@ -26,15 +26,10 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.static('public')); // Serve the website files
 
-// AWS S3 Configuration
-// You'll need to set these environment variables or put them in a .env file
-const s3 = new AWS.S3({
-  accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-  region: process.env.AWS_REGION || 'us-east-1'
-});
-
-const S3_BUCKET = process.env.S3_BUCKET_NAME || 'retro-capture-videos';
+// Cloudflare R2 Configuration
+const CLOUDFLARE_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID;
+const CLOUDFLARE_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN;
+const R2_BUCKET_NAME = process.env.R2_BUCKET_NAME || 'retro-capture-videos';
 
 // Keep track of connected phones
 let masterClient = null; // The first phone that connects (the boss)
@@ -42,7 +37,7 @@ let clients = new Map(); // All connected phones
 let sessionId = Date.now(); // Unique ID for this capture session
 
 console.log('🎥 Retro Capture Server Starting...');
-console.log(`📦 S3 Bucket: ${S3_BUCKET}`);
+console.log(`📦 R2 Bucket: ${R2_BUCKET_NAME}`);
 
 // When a phone connects
 io.on('connection', (socket) => {
@@ -118,37 +113,53 @@ io.on('connection', (socket) => {
   });
 });
 
-// Upload endpoint - receives videos from phones and uploads to S3
+// Upload endpoint - receives videos from phones and uploads to Cloudflare R2
 app.post('/upload', async (req, res) => {
   try {
     const { videoData, metadata } = req.body;
 
-    console.log(`📤 Uploading ${metadata.filename} to S3...`);
+    console.log(`📤 Uploading ${metadata.filename} to Cloudflare R2...`);
 
     // Convert base64 back to binary
     const base64Data = videoData.replace(/^data:video\/webm;base64,/, '');
     const videoBuffer = Buffer.from(base64Data, 'base64');
 
-    // Upload video to S3
-    const videoParams = {
-      Bucket: S3_BUCKET,
-      Key: `videos/${metadata.sessionId}/${metadata.filename}`,
-      Body: videoBuffer,
-      ContentType: 'video/webm'
-    };
+    // Upload video to Cloudflare R2 using their API
+    const videoKey = `videos/${metadata.sessionId}/${metadata.filename}`;
+    const uploadUrl = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/r2/buckets/${R2_BUCKET_NAME}/objects/${videoKey}`;
 
-    await s3.upload(videoParams).promise();
+    const videoResponse = await fetch(uploadUrl, {
+      method: 'PUT',
+      headers: {
+        'Authorization': `Bearer ${CLOUDFLARE_API_TOKEN}`,
+        'Content-Type': 'video/webm'
+      },
+      body: videoBuffer
+    });
+
+    if (!videoResponse.ok) {
+      throw new Error(`R2 upload failed: ${videoResponse.status} ${await videoResponse.text()}`);
+    }
+
     console.log(`✅ Video uploaded: ${metadata.filename}`);
 
     // Upload metadata as JSON
-    const metadataParams = {
-      Bucket: S3_BUCKET,
-      Key: `videos/${metadata.sessionId}/${metadata.filename}.json`,
-      Body: JSON.stringify(metadata, null, 2),
-      ContentType: 'application/json'
-    };
+    const metadataKey = `videos/${metadata.sessionId}/${metadata.filename}.json`;
+    const metadataUrl = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/r2/buckets/${R2_BUCKET_NAME}/objects/${metadataKey}`;
 
-    await s3.upload(metadataParams).promise();
+    const metadataResponse = await fetch(metadataUrl, {
+      method: 'PUT',
+      headers: {
+        'Authorization': `Bearer ${CLOUDFLARE_API_TOKEN}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(metadata, null, 2)
+    });
+
+    if (!metadataResponse.ok) {
+      throw new Error(`Metadata upload failed: ${metadataResponse.status} ${await metadataResponse.text()}`);
+    }
+
     console.log(`✅ Metadata uploaded: ${metadata.filename}.json`);
 
     res.json({
@@ -177,5 +188,5 @@ server.listen(PORT, () => {
   console.log('   1. First phone to connect becomes the MASTER');
   console.log('   2. All other phones are CLIENTS');
   console.log('   3. Master presses CAPTURE button to save last 5 seconds');
-  console.log('   4. Videos automatically upload to S3');
+  console.log('   4. Videos automatically upload to Cloudflare R2');
 });
