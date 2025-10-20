@@ -27,9 +27,43 @@ const captureBtn = document.getElementById('capture-btn');
 const messageDiv = document.getElementById('message');
 const flashSelector = document.getElementById('flash-selector');
 const flashPhoneSelect = document.getElementById('flash-phone-select');
+const debugPanel = document.getElementById('debug-panel');
+const debugToggle = document.getElementById('debug-toggle');
+const debugClose = document.getElementById('debug-close');
+const debugClear = document.getElementById('debug-clear');
+const debugLogs = document.getElementById('debug-logs');
+
+// === DEBUG SYSTEM ===
+const debugLog = (message, type = 'info') => {
+    const timestamp = new Date().toLocaleTimeString();
+    const logEntry = document.createElement('div');
+    logEntry.className = `debug-log ${type}`;
+    logEntry.innerHTML = `<span class="debug-timestamp">[${timestamp}]</span> ${message}`;
+    debugLogs.appendChild(logEntry);
+    debugLogs.scrollTop = debugLogs.scrollHeight;
+
+    // Also log to console
+    console.log(`[${type.toUpperCase()}] ${message}`);
+};
+
+// Debug panel controls
+debugToggle.addEventListener('click', () => {
+    debugPanel.classList.remove('hidden');
+    debugToggle.classList.add('panel-open');
+});
+
+debugClose.addEventListener('click', () => {
+    debugPanel.classList.add('hidden');
+    debugToggle.classList.remove('panel-open');
+});
+
+debugClear.addEventListener('click', () => {
+    debugLogs.innerHTML = '';
+    debugLog('Debug log cleared', 'info');
+});
 
 // === STARTUP ===
-console.log('📱 Retro Capture App Starting...');
+debugLog('📱 Retro Capture App Starting...', 'info');
 
 // Show start button for Safari compatibility
 showMessage('📱 TAP SCREEN TO START', null);
@@ -37,7 +71,7 @@ document.body.addEventListener('click', startApp, { once: true });
 document.body.addEventListener('touchstart', startApp, { once: true });
 
 async function startApp() {
-    console.log('🎬 User tapped - starting app...');
+    debugLog('🎬 User tapped - starting app...', 'info');
     showMessage('⏳ Starting camera...', null);
     await init();
 }
@@ -107,13 +141,39 @@ async function startCamera() {
 
 // === CONTINUOUS RECORDING ===
 async function startContinuousRecording() {
-    console.log('🎬 Starting continuous recording...');
+    debugLog('🎬 Starting continuous recording...', 'info');
+
+    // Check what mimeTypes are supported
+    const supportedTypes = [
+        'video/webm;codecs=vp8,opus',
+        'video/webm;codecs=vp9,opus',
+        'video/webm',
+        'video/mp4'
+    ];
+
+    let selectedType = null;
+    for (const type of supportedTypes) {
+        if (MediaRecorder.isTypeSupported(type)) {
+            selectedType = type;
+            debugLog(`✅ Using mimeType: ${type}`, 'success');
+            break;
+        }
+    }
+
+    if (!selectedType) {
+        debugLog('⚠️ No preferred mimeType supported, using default', 'warning');
+    }
 
     // Create a recorder that saves video in WebM format
-    mediaRecorder = new MediaRecorder(videoStream, {
-        mimeType: 'video/webm;codecs=vp8,opus',
+    const recorderOptions = selectedType ? {
+        mimeType: selectedType,
         videoBitsPerSecond: 2500000 // 2.5 Mbps - good quality
-    });
+    } : {
+        videoBitsPerSecond: 2500000
+    };
+
+    mediaRecorder = new MediaRecorder(videoStream, recorderOptions);
+    debugLog(`📹 MediaRecorder created with mimeType: ${mediaRecorder.mimeType}`, 'info');
 
     // Every time we get a chunk of video (every 1 second)
     mediaRecorder.ondataavailable = (event) => {
@@ -281,19 +341,23 @@ flashPhoneSelect.addEventListener('change', () => {
 // === SAVE VIDEO ===
 async function saveVideo(captureData) {
     if (isUploading) {
-        console.log('⏳ Already uploading, ignoring this capture');
+        debugLog('⏳ Already uploading, ignoring this capture', 'warning');
         return;
     }
 
     isUploading = true;
     showMessage('💾 Saving video...');
+    debugLog('💾 Starting video save process...', 'info');
 
     try {
         // Stop and restart the recorder to get the final chunk
+        debugLog(`📼 Stopping recorder (state: ${mediaRecorder.state})`, 'info');
         mediaRecorder.stop();
 
         // Wait a moment for the final chunk
         await new Promise(resolve => setTimeout(resolve, 500));
+
+        debugLog(`📼 Recorded chunks: ${recordedChunks.length}`, 'info');
 
         // Combine all chunks into one video file
         const videoBlob = new Blob(
@@ -301,7 +365,8 @@ async function saveVideo(captureData) {
             { type: 'video/webm' }
         );
 
-        console.log(`📦 Video size: ${(videoBlob.size / 1024 / 1024).toFixed(2)} MB`);
+        const videoSizeMB = (videoBlob.size / 1024 / 1024).toFixed(2);
+        debugLog(`📦 Video blob created: ${videoSizeMB} MB, type: ${videoBlob.type}`, 'success');
 
         // Create a unique filename
         const filename = `capture_${captureData.sessionId}_${socket.id}_${captureData.timestamp}.webm`;
@@ -319,11 +384,12 @@ async function saveVideo(captureData) {
             role: myRole
         };
 
-        console.log('📤 Uploading to S3...');
+        debugLog(`📤 Uploading ${filename} to S3...`, 'info');
+        debugLog(`📁 Folder: ${captureData.folderName}`, 'info');
         await uploadToS3(videoBlob, metadata);
 
         showMessage('✅ Video saved successfully!', 2000);
-        console.log('✅ Upload complete');
+        debugLog('✅ Upload complete!', 'success');
 
         // Restart continuous recording
         recordedChunks = [];
@@ -333,8 +399,9 @@ async function saveVideo(captureData) {
         startBufferCountdown();
 
     } catch (error) {
-        console.error('❌ Save failed:', error);
-        showMessage('❌ Upload failed. Check console for details.');
+        debugLog(`❌ Save failed: ${error.message}`, 'error');
+        debugLog(`❌ Error stack: ${error.stack}`, 'error');
+        showMessage('❌ Upload failed. Check debug panel for details.');
 
         // Still restart recording on error
         recordedChunks = [];
@@ -349,10 +416,16 @@ async function saveVideo(captureData) {
 
 // === UPLOAD TO S3 ===
 async function uploadToS3(videoBlob, metadata) {
+    debugLog(`🔧 Creating FormData for upload...`, 'info');
+    debugLog(`   Blob size: ${videoBlob.size} bytes`, 'info');
+    debugLog(`   Blob type: ${videoBlob.type}`, 'info');
+
     // Use FormData to send binary video file (no base64 conversion)
     const formData = new FormData();
     formData.append('video', videoBlob, metadata.filename);
     formData.append('metadata', JSON.stringify(metadata));
+
+    debugLog(`📡 Sending POST to ${SERVER_URL}/upload`, 'info');
 
     // Send to our server, which will upload to S3
     const response = await fetch(`${SERVER_URL}/upload`, {
@@ -360,12 +433,16 @@ async function uploadToS3(videoBlob, metadata) {
         body: formData // Send as multipart/form-data, not JSON
     });
 
+    debugLog(`📡 Server response status: ${response.status} ${response.statusText}`, response.ok ? 'success' : 'error');
+
     if (!response.ok) {
+        const errorText = await response.text();
+        debugLog(`❌ Server error response: ${errorText}`, 'error');
         throw new Error(`Upload failed: ${response.statusText}`);
     }
 
     const result = await response.json();
-    console.log('📤 Upload response:', result);
+    debugLog(`📤 Upload response: ${JSON.stringify(result)}`, 'success');
 
     // Tell the server we're done
     socket.emit('video-uploaded', { filename: metadata.filename });
