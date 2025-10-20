@@ -26,7 +26,17 @@ const messageDiv = document.getElementById('message');
 
 // === STARTUP ===
 console.log('📱 Retro Capture App Starting...');
-init();
+
+// Show start button for Safari compatibility
+showMessage('📱 TAP SCREEN TO START', null);
+document.body.addEventListener('click', startApp, { once: true });
+document.body.addEventListener('touchstart', startApp, { once: true });
+
+async function startApp() {
+    console.log('🎬 User tapped - starting app...');
+    showMessage('⏳ Starting camera...', null);
+    await init();
+}
 
 // Initialize everything
 async function init() {
@@ -44,9 +54,21 @@ async function init() {
         connectToServer();
 
         console.log('✅ App initialized successfully');
+
+        // Hide the message after successful init
+        setTimeout(() => {
+            messageDiv.classList.remove('show');
+        }, 2000);
     } catch (error) {
         console.error('❌ Initialization failed:', error);
-        showMessage('Error: Could not access camera. Please allow camera access and refresh.');
+        const errorMsg = error.message || error.toString();
+        showMessage(`❌ CAMERA ERROR\n\n${errorMsg}\n\niPhone: Settings → Safari → Camera → Allow\n\nThen refresh this page.`, null);
+
+        // Keep trying to connect to server even if camera fails
+        // so we can show status
+        setTimeout(() => {
+            connectToServer();
+        }, 1000);
     }
 }
 
