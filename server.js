@@ -81,13 +81,23 @@ io.on('connection', (socket) => {
   socket.on('trigger-capture', () => {
     if (socket.id === masterClient) {
       const captureTime = Date.now();
-      console.log(`🔴 CAPTURE TRIGGERED at ${new Date(captureTime).toISOString()}`);
+      const captureDate = new Date(captureTime);
+
+      // Create folder name with date and time: YYYY-MM-DD_HH-MM-SS
+      const folderName = captureDate.toISOString()
+        .replace(/T/, '_')
+        .replace(/:/g, '-')
+        .split('.')[0]; // Remove milliseconds
+
+      console.log(`🔴 CAPTURE TRIGGERED at ${captureDate.toISOString()}`);
+      console.log(`   Folder: ${folderName}`);
       console.log(`   Broadcasting to ${clients.size} phones`);
 
-      // Tell ALL phones to save their last 5 seconds RIGHT NOW
+      // Tell ALL phones to save their last 6 seconds RIGHT NOW
       io.emit('capture', {
         timestamp: captureTime,
-        sessionId
+        sessionId,
+        folderName: folderName
       });
     }
   });
@@ -134,8 +144,9 @@ app.post('/upload', async (req, res) => {
     const base64Data = videoData.replace(/^data:video\/webm;base64,/, '');
     const videoBuffer = Buffer.from(base64Data, 'base64');
 
-    // Upload video to S3
-    const videoKey = `videos/${metadata.sessionId}/${metadata.filename}`;
+    // Upload video to S3 using folderName for organization
+    const folderName = metadata.folderName || metadata.sessionId;
+    const videoKey = `captures/${folderName}/${metadata.filename}`;
     const uploadCommand = new PutObjectCommand({
       Bucket: S3_BUCKET_NAME,
       Key: videoKey,
@@ -144,10 +155,10 @@ app.post('/upload', async (req, res) => {
     });
 
     await s3Client.send(uploadCommand);
-    console.log(`✅ Video uploaded: ${metadata.filename}`);
+    console.log(`✅ Video uploaded: ${folderName}/${metadata.filename}`);
 
     // Upload metadata as JSON
-    const metadataKey = `videos/${metadata.sessionId}/${metadata.filename}.json`;
+    const metadataKey = `captures/${folderName}/${metadata.filename}.json`;
     const metadataCommand = new PutObjectCommand({
       Bucket: S3_BUCKET_NAME,
       Key: metadataKey,

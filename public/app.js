@@ -2,7 +2,7 @@
 // It handles: camera access, continuous recording, and saving videos
 
 // === CONFIGURATION ===
-const BUFFER_DURATION = 5000; // Keep last 5 seconds (5000 milliseconds)
+const BUFFER_DURATION = 6000; // Keep last 6 seconds (6000 milliseconds) - includes 1 sec for beep
 const CHUNK_DURATION = 1000;  // Record in 1-second chunks
 const SERVER_URL = window.location.origin; // Automatically use the server's address
 
@@ -192,12 +192,16 @@ function connectToServer() {
     socket.on('capture', async (data) => {
         console.log('🔴 CAPTURE TRIGGERED!');
         console.log(`   Timestamp: ${data.timestamp}`);
-        console.log(`   Session: ${data.sessionId}`);
+        console.log(`   Folder: ${data.folderName}`);
 
-        // Play sync beep
+        // Play sync beep FIRST, then wait 1 second before saving
+        // This puts the beep at the START of the 6-second video
         playSyncTone();
 
-        // Save the video
+        // Wait 1 second for the beep to be captured in the buffer
+        await new Promise(resolve => setTimeout(resolve, 1000));
+
+        // Now save the video (which includes the beep at the beginning)
         await saveVideo(data);
     });
 
@@ -247,6 +251,7 @@ async function saveVideo(captureData) {
         // Create metadata (info about this video)
         const metadata = {
             filename: filename,
+            folderName: captureData.folderName,
             sessionId: captureData.sessionId,
             deviceId: socket.id,
             captureTimestamp: captureData.timestamp,
