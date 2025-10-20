@@ -68,13 +68,51 @@ io.on('connection', (socket) => {
   clients.set(socket.id, {
     id: socket.id,
     role: socket.id === masterClient ? 'master' : 'client',
-    connected: new Date()
+    connected: new Date(),
+    hasFlash: false // Will be updated when client registers
   });
 
   // Tell all phones how many are connected
   io.emit('status', {
     totalClients: clients.size,
     sessionId
+  });
+
+  // When a phone registers its flash capability
+  socket.on('register-flash', (data) => {
+    const client = clients.get(socket.id);
+    if (client) {
+      client.hasFlash = data.hasFlash;
+      console.log(`📸 ${socket.id} flash capability: ${data.hasFlash}`);
+
+      // Send updated flash-capable phones list to master
+      if (masterClient) {
+        const flashPhones = Array.from(clients.entries())
+          .filter(([id, client]) => client.hasFlash)
+          .map(([id, client]) => ({ id, role: client.role }));
+
+        io.to(masterClient).emit('flash-phones-list', { phones: flashPhones });
+        console.log(`📋 Sent flash phones list to master: ${flashPhones.length} phones`);
+      }
+    }
+  });
+
+  // When master selects a flash phone
+  socket.on('select-flash-phone', (data) => {
+    if (socket.id === masterClient) {
+      const selectedId = data.phoneId;
+      console.log(`⚡ Master selected flash phone: ${selectedId}`);
+
+      // Tell all phones they are NOT the flash phone
+      clients.forEach((client, id) => {
+        io.to(id).emit('set-flash-phone', { isFlashPhone: false });
+      });
+
+      // Tell the selected phone it IS the flash phone
+      if (selectedId && selectedId !== 'none') {
+        io.to(selectedId).emit('set-flash-phone', { isFlashPhone: true });
+      }
+    }
   });
 
   // When the master presses the capture button

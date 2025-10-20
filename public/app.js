@@ -15,6 +15,8 @@ let videoStream;         // The camera feed
 let recordedChunks = []; // Stores the last 5 seconds of video
 let audioContext;        // For playing the sync beep
 let isUploading = false; // Are we currently uploading?
+let hasFlash = false;    // Does this device have flash capability?
+let isFlashPhone = false; // Is this the designated flash phone?
 
 // === ELEMENTS (buttons, text, etc) ===
 const videoPreview = document.getElementById('video-preview');
@@ -23,6 +25,8 @@ const statusText = document.getElementById('status-text');
 const clientCount = document.getElementById('client-count');
 const captureBtn = document.getElementById('capture-btn');
 const messageDiv = document.getElementById('message');
+const flashSelector = document.getElementById('flash-selector');
+const flashPhoneSelect = document.getElementById('flash-phone-select');
 
 // === STARTUP ===
 console.log('📱 Retro Capture App Starting...');
@@ -42,7 +46,7 @@ async function startApp() {
 async function init() {
     try {
         // Step 1: Get camera and microphone access
-        await startCamera();
+        hasFlash = await startCamera();
 
         // Step 2: Start recording continuously
         await startContinuousRecording();
@@ -88,8 +92,17 @@ async function startCamera() {
 
     // Show the camera preview on screen
     videoPreview.srcObject = videoStream;
+
+    // Check if this camera has flash/torch capability
+    const videoTrack = videoStream.getVideoTracks()[0];
+    const capabilities = videoTrack.getCapabilities();
+    const hasFlash = capabilities.torch || false;
+
     console.log('✅ Camera started');
+    console.log(`📸 Flash available: ${hasFlash}`);
     updateStatus('Camera active');
+
+    return hasFlash;
 }
 
 // === CONTINUOUS RECORDING ===
@@ -161,6 +174,10 @@ function connectToServer() {
     socket.on('connect', () => {
         console.log('✅ Connected to server');
         updateStatus('Connected to server');
+
+        // Send flash capability to server
+        socket.emit('register-flash', { hasFlash });
+        console.log(`📸 Registered flash capability: ${hasFlash}`);
     });
 
     // Server tells us if we're master or client
@@ -174,13 +191,23 @@ function connectToServer() {
         if (myRole === 'master') {
             captureBtn.style.display = 'flex';
             captureBtn.disabled = false;
+            flashSelector.classList.add('show');
             updateStatus('You control the capture - press button when ready');
         } else {
             captureBtn.style.display = 'none';
+            flashSelector.classList.remove('show');
             updateStatus('Waiting for master to trigger capture...');
         }
 
         console.log(`🎭 Role assigned: ${myRole.toUpperCase()}`);
+    });
+
+    // Master receives list of flash-capable phones
+    socket.on('flash-phones-list', (data) => {
+        if (myRole === 'master') {
+            console.log('📋 Received flash phones list:', data.phones);
+            updateFlashPhonesList(data.phones);
+        }
     });
 
     // Status update (how many phones connected)
@@ -194,15 +221,34 @@ function connectToServer() {
         console.log(`   Timestamp: ${data.timestamp}`);
         console.log(`   Folder: ${data.folderName}`);
 
-        // Play sync beep FIRST, then wait 1 second before saving
-        // This puts the beep at the START of the 6-second video
+        // Play sync beep/flash IMMEDIATELY
+        // This captures the moment, then we record for 1 more second
         playSyncTone();
 
-        // Wait 1 second for the beep to be captured in the buffer
+        // Trigger flash if this is the flash phone
+        if (isFlashPhone && hasFlash) {
+            await triggerFlash();
+        }
+
+        // Wait 1 second AFTER the beep/flash to capture it in the buffer
+        // This makes the beep/flash appear at second 5-6 of the 6-second video
         await new Promise(resolve => setTimeout(resolve, 1000));
 
-        // Now save the video (which includes the beep at the beginning)
+        // Now save: previous 5 seconds + the 1 second with beep/flash = 6 seconds total
         await saveVideo(data);
+    });
+
+    // When master designates this as the flash phone
+    socket.on('set-flash-phone', (data) => {
+        isFlashPhone = data.isFlashPhone;
+        console.log(`⚡ Flash phone status: ${isFlashPhone}`);
+
+        if (isFlashPhone) {
+            showMessage('⚡ FLASH PHONE', 3000);
+            updateFlashIndicator(true);
+        } else {
+            updateFlashIndicator(false);
+        }
     });
 
     // If disconnected
@@ -218,6 +264,13 @@ captureBtn.addEventListener('click', () => {
         console.log('🎬 Master pressed CAPTURE button');
         socket.emit('trigger-capture');
     }
+});
+
+// === FLASH PHONE SELECTOR ===
+flashPhoneSelect.addEventListener('change', () => {
+    const selectedPhoneId = flashPhoneSelect.value;
+    console.log(`⚡ Master selected flash phone: ${selectedPhoneId}`);
+    socket.emit('select-flash-phone', { phoneId: selectedPhoneId });
 });
 
 // === SAVE VIDEO ===
@@ -319,6 +372,30 @@ function blobToBase64(blob) {
     });
 }
 
+// === FLASH CONTROL ===
+async function triggerFlash() {
+    try {
+        const videoTrack = videoStream.getVideoTracks()[0];
+
+        // Turn flash ON
+        await videoTrack.applyConstraints({
+            advanced: [{ torch: true }]
+        });
+        console.log('⚡ Flash ON');
+
+        // Keep flash on for 0.5 seconds (same duration as beep)
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        // Turn flash OFF
+        await videoTrack.applyConstraints({
+            advanced: [{ torch: false }]
+        });
+        console.log('⚡ Flash OFF');
+    } catch (error) {
+        console.error('❌ Flash error:', error);
+    }
+}
+
 // === UI HELPERS ===
 function updateStatus(text) {
     statusText.textContent = text;
@@ -333,6 +410,34 @@ function showMessage(text, duration = null) {
             messageDiv.classList.remove('show');
         }, duration);
     }
+}
+
+function updateFlashIndicator(isFlash) {
+    // Add or remove flash indicator in the role display
+    if (isFlash) {
+        roleDisplay.textContent = `${roleDisplay.textContent} ⚡ FLASH`;
+        roleDisplay.classList.add('flash-phone');
+    } else {
+        roleDisplay.textContent = roleDisplay.textContent.replace(' ⚡ FLASH', '');
+        roleDisplay.classList.remove('flash-phone');
+    }
+}
+
+function updateFlashPhonesList(phones) {
+    // Clear current options except "No Flash"
+    flashPhoneSelect.innerHTML = '<option value="none">No Flash</option>';
+
+    // Add each flash-capable phone to the dropdown
+    phones.forEach(phone => {
+        const option = document.createElement('option');
+        option.value = phone.id;
+        option.textContent = phone.id === socket.id ?
+            `This Phone (${phone.role})` :
+            `Phone ${phone.id.substring(0, 8)}... (${phone.role})`;
+        flashPhoneSelect.appendChild(option);
+    });
+
+    console.log(`📋 Updated flash phones dropdown: ${phones.length} phones`);
 }
 
 // Handle errors

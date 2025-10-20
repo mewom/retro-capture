@@ -66,6 +66,45 @@
             color: #4a9eff;
         }
 
+        .role.flash-phone {
+            background: rgba(255, 200, 0, 0.2);
+            padding: 5px 10px;
+            border-radius: 8px;
+        }
+
+        .flash-selector {
+            margin-top: 10px;
+            display: none;
+            pointer-events: all;
+        }
+
+        .flash-selector.show {
+            display: block;
+        }
+
+        .flash-selector label {
+            display: block;
+            font-size: 12px;
+            color: #aaa;
+            margin-bottom: 5px;
+        }
+
+        .flash-selector select {
+            width: 100%;
+            padding: 8px 12px;
+            background: rgba(255,255,255,0.1);
+            border: 1px solid rgba(255,255,255,0.3);
+            border-radius: 8px;
+            color: #fff;
+            font-size: 14px;
+            cursor: pointer;
+        }
+
+        .flash-selector select option {
+            background: #222;
+            color: #fff;
+        }
+
         .info {
             font-size: 14px;
             color: #aaa;
@@ -177,6 +216,12 @@
                 <span id="status-text">Initializing...</span>
             </div>
             <div class="info" id="client-count">0 phones connected</div>
+            <div class="flash-selector" id="flash-selector">
+                <label for="flash-phone-select">⚡ Flash Phone:</label>
+                <select id="flash-phone-select">
+                    <option value="none">No Flash</option>
+                </select>
+            </div>
         </div>
     </div>
 
