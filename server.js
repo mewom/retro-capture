@@ -26,19 +26,18 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.static('public')); // Serve the website files
 
-// Cloudflare R2 Configuration (S3-compatible)
-const R2_BUCKET_NAME = process.env.R2_BUCKET_NAME || 'retro-capture-videos';
-const R2_ENDPOINT = process.env.R2_ENDPOINT;
-const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID;
-const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY;
+// AWS S3 Configuration
+const S3_BUCKET_NAME = process.env.S3_BUCKET_NAME || 'retro-capture-videos';
+const AWS_REGION = process.env.AWS_REGION || 'us-east-1';
+const AWS_ACCESS_KEY_ID = process.env.AWS_ACCESS_KEY_ID;
+const AWS_SECRET_ACCESS_KEY = process.env.AWS_SECRET_ACCESS_KEY;
 
-// Create S3 client configured for Cloudflare R2
+// Create S3 client
 const s3Client = new S3Client({
-  region: 'auto',
-  endpoint: R2_ENDPOINT,
+  region: AWS_REGION,
   credentials: {
-    accessKeyId: R2_ACCESS_KEY_ID,
-    secretAccessKey: R2_SECRET_ACCESS_KEY
+    accessKeyId: AWS_ACCESS_KEY_ID,
+    secretAccessKey: AWS_SECRET_ACCESS_KEY
   }
 });
 
@@ -48,7 +47,7 @@ let clients = new Map(); // All connected phones
 let sessionId = Date.now(); // Unique ID for this capture session
 
 console.log('🎥 Retro Capture Server Starting...');
-console.log(`📦 R2 Bucket: ${R2_BUCKET_NAME}`);
+console.log(`📦 S3 Bucket: ${S3_BUCKET_NAME}`);
 
 // When a phone connects
 io.on('connection', (socket) => {
@@ -129,16 +128,16 @@ app.post('/upload', async (req, res) => {
   try {
     const { videoData, metadata } = req.body;
 
-    console.log(`📤 Uploading ${metadata.filename} to Cloudflare R2...`);
+    console.log(`📤 Uploading ${metadata.filename} to AWS S3...`);
 
     // Convert base64 back to binary
     const base64Data = videoData.replace(/^data:video\/webm;base64,/, '');
     const videoBuffer = Buffer.from(base64Data, 'base64');
 
-    // Upload video to R2 using S3-compatible API
+    // Upload video to S3
     const videoKey = `videos/${metadata.sessionId}/${metadata.filename}`;
     const uploadCommand = new PutObjectCommand({
-      Bucket: R2_BUCKET_NAME,
+      Bucket: S3_BUCKET_NAME,
       Key: videoKey,
       Body: videoBuffer,
       ContentType: 'video/webm'
@@ -150,7 +149,7 @@ app.post('/upload', async (req, res) => {
     // Upload metadata as JSON
     const metadataKey = `videos/${metadata.sessionId}/${metadata.filename}.json`;
     const metadataCommand = new PutObjectCommand({
-      Bucket: R2_BUCKET_NAME,
+      Bucket: S3_BUCKET_NAME,
       Key: metadataKey,
       Body: JSON.stringify(metadata, null, 2),
       ContentType: 'application/json'
@@ -185,5 +184,5 @@ server.listen(PORT, () => {
   console.log('   1. First phone to connect becomes the MASTER');
   console.log('   2. All other phones are CLIENTS');
   console.log('   3. Master presses CAPTURE button to save last 5 seconds');
-  console.log('   4. Videos automatically upload to Cloudflare R2');
+  console.log('   4. Videos automatically upload to AWS S3');
 });
