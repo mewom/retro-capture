@@ -10,6 +10,13 @@ const socketIO = require('socket.io');
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const cors = require('cors');
 const path = require('path');
+const multer = require('multer');
+
+// Configure multer for handling file uploads in memory
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 50 * 1024 * 1024 } // 50MB limit
+});
 
 // Create the web server
 const app = express();
@@ -171,16 +178,15 @@ io.on('connection', (socket) => {
   });
 });
 
-// Upload endpoint - receives videos from phones and uploads to Cloudflare R2
-app.post('/upload', async (req, res) => {
+// Upload endpoint - receives videos from phones and uploads to AWS S3
+app.post('/upload', upload.single('video'), async (req, res) => {
   try {
-    const { videoData, metadata } = req.body;
+    // Get the video file from multer (it's in memory as a Buffer)
+    const videoBuffer = req.file.buffer;
+    const metadata = JSON.parse(req.body.metadata);
 
     console.log(`📤 Uploading ${metadata.filename} to AWS S3...`);
-
-    // Convert base64 back to binary
-    const base64Data = videoData.replace(/^data:video\/webm;base64,/, '');
-    const videoBuffer = Buffer.from(base64Data, 'base64');
+    console.log(`   Size: ${(videoBuffer.length / 1024 / 1024).toFixed(2)} MB`);
 
     // Upload video to S3 using folderName for organization
     const folderName = metadata.folderName || metadata.sessionId;

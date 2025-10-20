@@ -349,19 +349,15 @@ async function saveVideo(captureData) {
 
 // === UPLOAD TO S3 ===
 async function uploadToS3(videoBlob, metadata) {
-    // Convert video to base64 for upload
-    const videoData = await blobToBase64(videoBlob);
+    // Use FormData to send binary video file (no base64 conversion)
+    const formData = new FormData();
+    formData.append('video', videoBlob, metadata.filename);
+    formData.append('metadata', JSON.stringify(metadata));
 
     // Send to our server, which will upload to S3
     const response = await fetch(`${SERVER_URL}/upload`, {
         method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-            videoData: videoData,
-            metadata: metadata
-        })
+        body: formData // Send as multipart/form-data, not JSON
     });
 
     if (!response.ok) {
