@@ -128,13 +128,18 @@ io.on('connection', (socket) => {
       const captureTime = Date.now();
       const captureDate = new Date(captureTime);
 
-      // Create folder name with date and time: YYYY-MM-DD_HH-MM-SS
-      const folderName = captureDate.toISOString()
-        .replace(/T/, '_')
-        .replace(/:/g, '-')
-        .split('.')[0]; // Remove milliseconds
+      // Create human-readable folder name: YYYYMMDD_HHMMSS_<timestamp>
+      // Example: 20251020_152430_1729442670000
+      const year = captureDate.getFullYear();
+      const month = String(captureDate.getMonth() + 1).padStart(2, '0');
+      const day = String(captureDate.getDate()).padStart(2, '0');
+      const hours = String(captureDate.getHours()).padStart(2, '0');
+      const minutes = String(captureDate.getMinutes()).padStart(2, '0');
+      const seconds = String(captureDate.getSeconds()).padStart(2, '0');
 
-      console.log(`🔴 CAPTURE TRIGGERED at ${captureDate.toISOString()}`);
+      const folderName = `${year}${month}${day}_${hours}${minutes}${seconds}_${captureTime}`;
+
+      console.log(`🔴 CAPTURE TRIGGERED at ${captureDate.toLocaleString()}`);
       console.log(`   Folder: ${folderName}`);
       console.log(`   Broadcasting to ${clients.size} phones`);
 
