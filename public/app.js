@@ -386,6 +386,19 @@ async function saveVideo(captureData) {
         const videoSizeMB = (videoBlob.size / 1024 / 1024).toFixed(2);
         debugLog(`📦 Video blob created: ${videoSizeMB} MB, type: ${videoBlob.type}`, 'success');
 
+        // Test: Read first few bytes of blob to verify it's valid WebM
+        const headerCheck = await new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onload = () => {
+                const arr = new Uint8Array(reader.result);
+                const header = Array.from(arr.slice(0, 4)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+                debugLog(`🔍 Blob header bytes: ${header}`, 'info');
+                debugLog(`   Expected WebM: 1a 45 df a3`, 'info');
+                resolve(header);
+            };
+            reader.readAsArrayBuffer(videoBlob.slice(0, 4));
+        });
+
         // Create a unique filename
         const filename = `capture_${captureData.sessionId}_${socket.id}_${captureData.timestamp}.webm`;
 
