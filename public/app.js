@@ -267,12 +267,7 @@ async function createRecorder(stream) {
 
 // Schedule the next segment rotation
 function scheduleNextSegment() {
-    // Play beep 500ms before segment ends (so it's in the last 0.5s of video)
-    setTimeout(() => {
-        if (!isUploading) { // Only beep if not uploading
-            playInFileBeep(BEEP_BEFORE_END_MS, 1000);
-        }
-    }, BUFFER_DURATION - BEEP_BEFORE_END_MS);
+    // NOTE: We don't beep during rotation anymore - only when capture is triggered
 
     // Start overlap recorder before stopping current
     setTimeout(async () => {
@@ -391,13 +386,18 @@ function connectToServer() {
         debugLog(`   Timestamp: ${data.timestamp}`, 'info');
         debugLog(`   Folder: ${data.folderName}`, 'info');
 
+        // Play beep immediately (will be in current segment being recorded)
+        playInFileBeep(500, 1000);
+
         // Trigger flash if this is the flash phone (flash happens immediately)
         if (isFlashPhone && hasFlash) {
             await triggerFlash();
         }
 
-        // Save the latest segment (already has beep at the end from automatic rotation)
-        // The beep was automatically mixed in 0.5s before segment ended
+        // Wait a moment for beep to finish, then save the latest completed segment
+        await new Promise(resolve => setTimeout(resolve, 600));
+
+        // Save the latest segment
         await saveVideo(data);
     });
 

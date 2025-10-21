@@ -52,7 +52,7 @@ const s3Client = new S3Client({
 let masterClient = null; // The first phone that connects (the boss)
 let clients = new Map(); // All connected phones
 let sessionId = Date.now(); // Unique ID for this capture session
-let captureCounter = 0; // Counter for sequential folder numbering
+let captureCounter = 2; // Counter for sequential folder numbering (starting at 02)
 
 console.log('🎥 Retro Capture Server Starting...');
 console.log(`📦 S3 Bucket: ${S3_BUCKET_NAME}`);
