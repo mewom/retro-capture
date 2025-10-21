@@ -120,6 +120,7 @@ setInterval(() => {
 // When a phone connects
 io.on('connection', (socket) => {
   console.log(`📱 New phone connected: ${socket.id}`);
+  console.log(`   Total active sockets: ${io.sockets.sockets.size}`);
 
   // If this is the first phone, make it the conductor
   if (!conductorClient) {
@@ -185,6 +186,11 @@ io.on('connection', (socket) => {
 
   // When the conductor presses START SYNC button
   socket.on('start-sync', () => {
+    console.log(`📩 start-sync received from ${socket.id}`);
+    console.log(`   Is conductor? ${socket.id === conductorClient}`);
+    console.log(`   Current conductorClient: ${conductorClient}`);
+    console.log(`   syncStarted? ${syncStarted}`);
+
     if (socket.id === conductorClient && !syncStarted) {
       syncStarted = true;
 

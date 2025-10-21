@@ -484,10 +484,25 @@ function connectToServer() {
 
 // === SYNC BUTTON ===
 syncBtn.addEventListener('click', () => {
-    if (myRole === 'conductor' && !syncStarted) {
-        debugLog('🎬 Conductor pressed START SYNC button', 'success');
-        socket.emit('start-sync');
+    debugLog(`🎬 SYNC button clicked. Role: ${myRole}, syncStarted: ${syncStarted}`, 'info');
+
+    if (myRole !== 'conductor') {
+        debugLog(`❌ Cannot sync: Not conductor (role is ${myRole})`, 'error');
+        return;
     }
+
+    if (syncStarted) {
+        debugLog('❌ Cannot sync: Already started', 'error');
+        return;
+    }
+
+    if (!socket || !socket.connected) {
+        debugLog('❌ Cannot sync: Not connected to server', 'error');
+        return;
+    }
+
+    debugLog('✅ Emitting start-sync event', 'success');
+    socket.emit('start-sync');
 });
 
 // === CAPTURE BUTTON ===
