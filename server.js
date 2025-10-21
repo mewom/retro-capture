@@ -98,6 +98,25 @@ async function initializeCaptureCounter() {
 // Initialize counter on startup
 initializeCaptureCounter();
 
+// Periodic cleanup of stale connections (every 30 seconds)
+setInterval(() => {
+  const connectedSockets = io.sockets.sockets;
+  const connectedIds = new Set(Array.from(connectedSockets.keys()));
+
+  let removedCount = 0;
+  for (const [id, client] of clients.entries()) {
+    if (!connectedIds.has(id)) {
+      clients.delete(id);
+      removedCount++;
+    }
+  }
+
+  if (removedCount > 0) {
+    console.log(`🧹 Cleaned up ${removedCount} stale connection(s)`);
+    io.emit('status', { totalClients: clients.size, sessionId });
+  }
+}, 30000);
+
 // When a phone connects
 io.on('connection', (socket) => {
   console.log(`📱 New phone connected: ${socket.id}`);
@@ -236,6 +255,12 @@ io.on('connection', (socket) => {
     console.log(`📱 Phone disconnected: ${socket.id}`);
     clients.delete(socket.id);
 
+    // Broadcast updated count to remaining phones
+    io.emit('status', {
+      totalClients: clients.size,
+      sessionId
+    });
+
     // If the conductor leaves, assign a new conductor
     if (socket.id === conductorClient && clients.size > 0) {
       const newConductor = clients.keys().next().value;
@@ -245,14 +270,9 @@ io.on('connection', (socket) => {
     } else if (clients.size === 0) {
       conductorClient = null;
       sessionId = Date.now(); // New session for next connection
+      syncStarted = false; // Reset sync state
       console.log('🔄 Session reset - no phones connected');
     }
-
-    // Update everyone on the count
-    io.emit('status', {
-      totalClients: clients.size,
-      sessionId
-    });
   });
 });
 
