@@ -367,7 +367,11 @@ async function saveVideo(captureData) {
 
         debugLog(`📼 Recorded chunks: ${recordedChunks.length}`, 'info');
 
-        // Log chunk details
+        // Log chunk details for debugging
+        recordedChunks.forEach((chunk, i) => {
+            debugLog(`  Chunk ${i}: ${(chunk.data.size / 1024).toFixed(1)} KB, type: ${chunk.data.type}`, 'info');
+        });
+
         const totalChunkSize = recordedChunks.reduce((sum, chunk) => sum + chunk.data.size, 0);
         debugLog(`📊 Total chunk size: ${(totalChunkSize / 1024 / 1024).toFixed(2)} MB`, 'info');
 
@@ -376,6 +380,8 @@ async function saveVideo(captureData) {
             recordedChunks.map(chunk => chunk.data),
             { type: mediaRecorder.mimeType }
         );
+
+        debugLog(`🔍 Blob mimeType used: ${mediaRecorder.mimeType}`, 'info');
 
         const videoSizeMB = (videoBlob.size / 1024 / 1024).toFixed(2);
         debugLog(`📦 Video blob created: ${videoSizeMB} MB, type: ${videoBlob.type}`, 'success');
