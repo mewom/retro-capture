@@ -175,25 +175,35 @@ async function startContinuousRecording() {
     mediaRecorder = new MediaRecorder(videoStream, recorderOptions);
     debugLog(`📹 MediaRecorder created with mimeType: ${mediaRecorder.mimeType}`, 'info');
 
-    // Every time we get a chunk of video (every 1 second)
+    // Every time we get a chunk of video
     mediaRecorder.ondataavailable = (event) => {
         if (event.data && event.data.size > 0) {
-            // Just collect ALL chunks - no filtering
             recordedChunks.push({
                 data: event.data,
                 timestamp: Date.now()
             });
 
+            // Keep only last 6 seconds worth of chunks
+            const cutoffTime = Date.now() - BUFFER_DURATION;
+            recordedChunks = recordedChunks.filter(chunk => chunk.timestamp > cutoffTime);
+
             console.log(`📼 Buffer: ${recordedChunks.length} chunks`);
 
-            // Update countdown - ready after 6 seconds of recording
+            // Update countdown
             updateBufferCountdown();
         }
     };
 
-    // Start recording in chunks
-    mediaRecorder.start(CHUNK_DURATION); // Get a chunk every 1 second
+    // Start recording WITHOUT timeslice - we'll manually request data
+    mediaRecorder.start();
     console.log('✅ Continuous recording started');
+
+    // Request a data chunk every second to build our rolling buffer
+    setInterval(() => {
+        if (mediaRecorder && mediaRecorder.state === 'recording') {
+            mediaRecorder.requestData();
+        }
+    }, CHUNK_DURATION);
 
     // Start countdown to show when buffer is ready
     startBufferCountdown();
