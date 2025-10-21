@@ -9,8 +9,9 @@ const SERVER_URL = window.location.origin; // Automatically use the server's add
 
 // === GLOBAL VARIABLES ===
 let socket;              // Connection to the server
-let myRole = null;       // Am I 'master' or 'client'?
+let myRole = null;       // Am I 'king' or 'client'?
 let sessionId = null;    // Unique ID for this capture session
+let syncStarted = false; // Has the king started synchronized recording?
 let videoStream;         // The camera feed (original from camera)
 let mixedStream;         // Mixed stream with audio for beeps
 let audioContext;        // For audio processing and beeps
@@ -31,6 +32,7 @@ const videoPreview = document.getElementById('video-preview');
 const roleDisplay = document.getElementById('role-display');
 const statusText = document.getElementById('status-text');
 const clientCount = document.getElementById('client-count');
+const syncBtn = document.getElementById('sync-btn');
 const captureBtn = document.getElementById('capture-btn');
 const messageDiv = document.getElementById('message');
 const flashSelector = document.getElementById('flash-selector');
@@ -93,10 +95,7 @@ async function init() {
         // Step 2: Set up audio context and mixed stream for beeps
         setupAudioMixing();
 
-        // Step 3: Start rotating segment recording
-        await startRotatingSegments();
-
-        // Step 4: Connect to the server
+        // Step 3: Connect to the server (will wait for sync signal before recording)
         connectToServer();
 
         debugLog('✅ App initialized successfully', 'success');
@@ -345,32 +344,40 @@ function connectToServer() {
         console.log(`📸 Registered flash capability: ${hasFlash}`);
     });
 
-    // Server tells us if we're master or client
+    // Server tells us if we're king or client
     socket.on('role', (data) => {
         myRole = data.role;
         sessionId = data.sessionId;
+        syncStarted = data.syncStarted || false;
 
-        roleDisplay.textContent = myRole === 'master' ? '👑 MASTER' : '📱 CLIENT';
+        roleDisplay.textContent = myRole === 'king' ? '👑 KING' : '📱 CLIENT';
         roleDisplay.className = `role ${myRole}`;
 
-        if (myRole === 'master') {
-            captureBtn.style.display = 'flex';
-            captureBtn.disabled = false;
+        if (myRole === 'king') {
+            syncBtn.style.display = syncStarted ? 'none' : 'flex';
+            captureBtn.style.display = syncStarted ? 'flex' : 'none';
+            captureBtn.disabled = !syncStarted;
             flashSelector.classList.add('show');
-            updateStatus('You control the capture - press button when ready');
+            updateStatus(syncStarted ? 'Ready - waiting for buffer...' : 'Press START SYNC to begin');
         } else {
+            syncBtn.style.display = 'none';
             captureBtn.style.display = 'none';
             flashSelector.classList.remove('show');
-            updateStatus('Waiting for master to trigger capture...');
+            updateStatus(syncStarted ? 'Waiting for king to capture...' : 'Waiting for king to start sync...');
         }
 
-        console.log(`🎭 Role assigned: ${myRole.toUpperCase()}`);
+        debugLog(`🎭 Role assigned: ${myRole.toUpperCase()}`, 'info');
+
+        // If sync already started, begin recording
+        if (syncStarted && !isRecordingActive) {
+            startRotatingSegments();
+        }
     });
 
-    // Master receives list of flash-capable phones
+    // King receives list of flash-capable phones
     socket.on('flash-phones-list', (data) => {
-        if (myRole === 'master') {
-            console.log('📋 Received flash phones list:', data.phones);
+        if (myRole === 'king') {
+            debugLog('📋 Received flash phones list: ' + data.phones.length, 'info');
             updateFlashPhonesList(data.phones);
         }
     });
@@ -380,24 +387,55 @@ function connectToServer() {
         clientCount.textContent = `${data.totalClients} phone${data.totalClients !== 1 ? 's' : ''} connected`;
     });
 
-    // THE BIG MOMENT: Master pressed capture!
+    // SYNC START: King has started synchronized recording
+    socket.on('sync-start', async (data) => {
+        debugLog('🎬 SYNC STARTED - Beginning synchronized recording', 'success');
+        syncStarted = true;
+
+        // Hide sync button, show capture button for king
+        if (myRole === 'king') {
+            syncBtn.style.display = 'none';
+            captureBtn.style.display = 'flex';
+            captureBtn.disabled = true; // Will enable after first segment
+        }
+
+        // Start rotating segments NOW (all phones start at same moment)
+        await startRotatingSegments();
+    });
+
+    // THE BIG MOMENT: King pressed capture!
     socket.on('capture', async (data) => {
         debugLog('🔴 CAPTURE TRIGGERED!', 'success');
         debugLog(`   Timestamp: ${data.timestamp}`, 'info');
         debugLog(`   Folder: ${data.folderName}`, 'info');
 
-        // Play beep immediately (will be in current segment being recorded)
+        // Play beep immediately (goes into current segment being recorded)
         playInFileBeep(500, 1000);
 
-        // Trigger flash if this is the flash phone (flash happens immediately)
+        // Trigger flash if this is the flash phone
         if (isFlashPhone && hasFlash) {
             await triggerFlash();
         }
 
-        // Wait a moment for beep to finish, then save the latest completed segment
-        await new Promise(resolve => setTimeout(resolve, 600));
+        // CRITICAL: Wait for the CURRENT segment (with beep) to complete
+        // We need to wait for the current 6s cycle to finish, not use the old segment
+        debugLog('⏳ Waiting for current segment (with beep) to complete...', 'info');
 
-        // Save the latest segment
+        // Set up a one-time listener for the next segment completion
+        const waitForSegmentWithBeep = new Promise(resolve => {
+            const originalCount = segmentCount;
+            const checkInterval = setInterval(() => {
+                if (segmentCount > originalCount) {
+                    clearInterval(checkInterval);
+                    resolve();
+                }
+            }, 100);
+        });
+
+        await waitForSegmentWithBeep;
+        debugLog('✅ Segment with beep ready!', 'success');
+
+        // Now save the segment that has the beep
         await saveVideo(data);
     });
 
@@ -421,10 +459,18 @@ function connectToServer() {
     });
 }
 
+// === SYNC BUTTON ===
+syncBtn.addEventListener('click', () => {
+    if (myRole === 'king' && !syncStarted) {
+        debugLog('🎬 King pressed START SYNC button', 'success');
+        socket.emit('start-sync');
+    }
+});
+
 // === CAPTURE BUTTON ===
 captureBtn.addEventListener('click', () => {
-    if (myRole === 'master' && !isUploading) {
-        console.log('🎬 Master pressed CAPTURE button');
+    if (myRole === 'king' && !isUploading && syncStarted) {
+        debugLog('🔴 King pressed CAPTURE button', 'success');
         socket.emit('trigger-capture');
     }
 });
@@ -432,7 +478,7 @@ captureBtn.addEventListener('click', () => {
 // === FLASH PHONE SELECTOR ===
 flashPhoneSelect.addEventListener('change', () => {
     const selectedPhoneId = flashPhoneSelect.value;
-    console.log(`⚡ Master selected flash phone: ${selectedPhoneId}`);
+    debugLog(`⚡ King selected flash phone: ${selectedPhoneId}`, 'info');
     socket.emit('select-flash-phone', { phoneId: selectedPhoneId });
 });
 
