@@ -7,7 +7,7 @@ require('dotenv').config();
 const express = require('express');
 const http = require('http');
 const socketIO = require('socket.io');
-const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client, PutObjectCommand, ListObjectsV2Command } = require('@aws-sdk/client-s3');
 const cors = require('cors');
 const path = require('path');
 const multer = require('multer');
@@ -57,6 +57,46 @@ let syncStarted = false; // Whether conductor has started synchronized recording
 
 console.log('🎥 Retro Capture Server Starting...');
 console.log(`📦 S3 Bucket: ${S3_BUCKET_NAME}`);
+
+// Initialize capture counter by checking existing folders in S3
+async function initializeCaptureCounter() {
+  try {
+    const listCommand = new ListObjectsV2Command({
+      Bucket: S3_BUCKET_NAME,
+      Prefix: 'captures/',
+      Delimiter: '/'
+    });
+
+    const response = await s3Client.send(listCommand);
+
+    if (response.CommonPrefixes && response.CommonPrefixes.length > 0) {
+      // Extract counter numbers from folder names (format: XX_YYYYMMDD_...)
+      const counters = response.CommonPrefixes
+        .map(prefix => {
+          const folderName = prefix.Prefix.replace('captures/', '').replace('/', '');
+          const match = folderName.match(/^(\d{2})_/);
+          return match ? parseInt(match[1], 10) : -1;
+        })
+        .filter(num => num >= 0);
+
+      if (counters.length > 0) {
+        const maxCounter = Math.max(...counters);
+        captureCounter = maxCounter + 1;
+        console.log(`📊 Found ${counters.length} existing captures, starting counter at ${String(captureCounter).padStart(2, '0')}`);
+      } else {
+        console.log(`📊 No existing captures found, starting counter at 02`);
+      }
+    } else {
+      console.log(`📊 No captures folder found, starting counter at 02`);
+    }
+  } catch (error) {
+    console.error('⚠️ Could not initialize counter from S3:', error.message);
+    console.log('📊 Using default counter start: 02');
+  }
+}
+
+// Initialize counter on startup
+initializeCaptureCounter();
 
 // When a phone connects
 io.on('connection', (socket) => {
@@ -128,15 +168,25 @@ io.on('connection', (socket) => {
   socket.on('start-sync', () => {
     if (socket.id === conductorClient && !syncStarted) {
       syncStarted = true;
-      const now = Date.now();
-      const startTime = now + 2000; // Start 2 seconds in the future
 
-      console.log(`🎬 SYNC STARTED by conductor at ${new Date(now).toLocaleString()}`);
-      console.log(`   Broadcasting sync signal to ${clients.size} phones`);
-      console.log(`   All phones will start recording at ${new Date(startTime).toLocaleString()}`);
+      console.log(`🎬 SYNC STARTED by conductor at ${new Date().toLocaleString()}`);
+      console.log(`   Broadcasting countdown to ${clients.size} phones`);
 
-      // Tell ALL phones to start their 8-second rotation at the SAME future time
-      io.emit('sync-start', { startTime });
+      // Send countdown: 3... 2... 1... GO!
+      let countdown = 3;
+
+      const countdownInterval = setInterval(() => {
+        if (countdown > 0) {
+          io.emit('sync-countdown', { count: countdown });
+          console.log(`   Countdown: ${countdown}...`);
+          countdown--;
+        } else {
+          clearInterval(countdownInterval);
+          // Send the GO signal
+          io.emit('sync-go');
+          console.log(`   🚀 GO! All phones should start NOW`);
+        }
+      }, 1000);
     }
   });
 

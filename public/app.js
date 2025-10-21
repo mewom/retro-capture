@@ -354,7 +354,7 @@ function connectToServer() {
         sessionId = data.sessionId;
         syncStarted = data.syncStarted || false;
 
-        roleDisplay.textContent = myRole === 'conductor' ? '�conductor CONDUCTOR' : '📱 CLIENT';
+        roleDisplay.textContent = myRole === 'conductor' ? '🎵 CONDUCTOR' : '📱 CLIENT';
         roleDisplay.className = `role ${myRole}`;
 
         if (myRole === 'conductor') {
@@ -391,13 +391,9 @@ function connectToServer() {
         clientCount.textContent = `${data.totalClients} phone${data.totalClients !== 1 ? 's' : ''} connected`;
     });
 
-    // SYNC START: Conductor has started synchronized recording
-    socket.on('sync-start', async (data) => {
-        const startTime = data.startTime; // Future timestamp when all should start
-        const now = Date.now();
-        const delay = startTime - now;
-
-        debugLog(`🎬 SYNC SIGNAL RECEIVED - Will start in ${delay}ms`, 'success');
+    // SYNC COUNTDOWN: Server is counting down
+    socket.on('sync-countdown', (data) => {
+        debugLog(`⏱️ Countdown: ${data.count}`, 'info');
         syncStarted = true;
 
         // Hide sync button, show capture button for conductor
@@ -405,16 +401,17 @@ function connectToServer() {
             syncBtn.style.display = 'none';
             captureBtn.style.display = 'flex';
             captureBtn.disabled = true; // Will enable after first segment
-            updateStatus(`Starting in ${Math.ceil(delay/1000)}s...`);
+            updateStatus(`Starting in ${data.count}s...`);
         } else {
-            updateStatus(`Starting in ${Math.ceil(delay/1000)}s...`);
+            updateStatus(`Starting in ${data.count}s...`);
         }
+    });
 
-        // Wait until the exact start time, then begin recording
-        setTimeout(async () => {
-            debugLog('🎬 STARTING RECORDING NOW (synchronized)', 'success');
-            await startRotatingSegments();
-        }, Math.max(0, delay));
+    // SYNC GO: Server says start NOW
+    socket.on('sync-go', async () => {
+        debugLog('🚀 GO! STARTING RECORDING NOW (synchronized)', 'success');
+        updateStatus('Recording started...');
+        await startRotatingSegments();
     });
 
     // THE BIG MOMENT: Conductor pressed capture!
