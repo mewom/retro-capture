@@ -49,11 +49,11 @@ const s3Client = new S3Client({
 });
 
 // Keep track of connected phones
-let kingClient = null; // The first phone that connects (the boss)
+let conductorClient = null; // The first phone that connects (the boss)
 let clients = new Map(); // All connected phones
 let sessionId = Date.now(); // Unique ID for this capture session
 let captureCounter = 2; // Counter for sequential folder numbering (starting at 02)
-let syncStarted = false; // Whether king has started synchronized recording
+let syncStarted = false; // Whether conductor has started synchronized recording
 
 console.log('🎥 Retro Capture Server Starting...');
 console.log(`📦 S3 Bucket: ${S3_BUCKET_NAME}`);
@@ -62,11 +62,11 @@ console.log(`📦 S3 Bucket: ${S3_BUCKET_NAME}`);
 io.on('connection', (socket) => {
   console.log(`📱 New phone connected: ${socket.id}`);
 
-  // If this is the first phone, make it the king
-  if (!kingClient) {
-    kingClient = socket.id;
-    socket.emit('role', { role: 'king', sessionId, syncStarted });
-    console.log(`👑 King assigned: ${socket.id}`);
+  // If this is the first phone, make it the conductor
+  if (!conductorClient) {
+    conductorClient = socket.id;
+    socket.emit('role', { role: 'conductor', sessionId, syncStarted });
+    console.log(`🎵 Conductor assigned: ${socket.id}`);
   } else {
     // Everyone else is a client
     socket.emit('role', { role: 'client', sessionId, syncStarted });
@@ -76,7 +76,7 @@ io.on('connection', (socket) => {
   // Add this phone to our list
   clients.set(socket.id, {
     id: socket.id,
-    role: socket.id === kingClient ? 'king' : 'client',
+    role: socket.id === conductorClient ? 'conductor' : 'client',
     connected: new Date(),
     hasFlash: false // Will be updated when client registers
   });
@@ -94,23 +94,23 @@ io.on('connection', (socket) => {
       client.hasFlash = data.hasFlash;
       console.log(`📸 ${socket.id} flash capability: ${data.hasFlash}`);
 
-      // Send updated flash-capable phones list to king
-      if (kingClient) {
+      // Send updated flash-capable phones list to conductor
+      if (conductorClient) {
         const flashPhones = Array.from(clients.entries())
           .filter(([id, client]) => client.hasFlash)
           .map(([id, client]) => ({ id, role: client.role }));
 
-        io.to(kingClient).emit('flash-phones-list', { phones: flashPhones });
-        console.log(`📋 Sent flash phones list to king: ${flashPhones.length} phones`);
+        io.to(conductorClient).emit('flash-phones-list', { phones: flashPhones });
+        console.log(`📋 Sent flash phones list to conductor: ${flashPhones.length} phones`);
       }
     }
   });
 
-  // When king selects a flash phone
+  // When conductor selects a flash phone
   socket.on('select-flash-phone', (data) => {
-    if (socket.id === kingClient) {
+    if (socket.id === conductorClient) {
       const selectedId = data.phoneId;
-      console.log(`⚡ King selected flash phone: ${selectedId}`);
+      console.log(`⚡ Conductor selected flash phone: ${selectedId}`);
 
       // Tell all phones they are NOT the flash phone
       clients.forEach((client, id) => {
@@ -124,23 +124,25 @@ io.on('connection', (socket) => {
     }
   });
 
-  // When the king presses START SYNC button
+  // When the conductor presses START SYNC button
   socket.on('start-sync', () => {
-    if (socket.id === kingClient && !syncStarted) {
+    if (socket.id === conductorClient && !syncStarted) {
       syncStarted = true;
-      const syncTime = Date.now();
+      const now = Date.now();
+      const startTime = now + 2000; // Start 2 seconds in the future
 
-      console.log(`🎬 SYNC STARTED by king at ${new Date(syncTime).toLocaleString()}`);
+      console.log(`🎬 SYNC STARTED by conductor at ${new Date(now).toLocaleString()}`);
       console.log(`   Broadcasting sync signal to ${clients.size} phones`);
+      console.log(`   All phones will start recording at ${new Date(startTime).toLocaleString()}`);
 
-      // Tell ALL phones to start their 6-second rotation NOW
-      io.emit('sync-start', { timestamp: syncTime });
+      // Tell ALL phones to start their 8-second rotation at the SAME future time
+      io.emit('sync-start', { startTime });
     }
   });
 
-  // When the king presses the capture button
+  // When the conductor presses the capture button
   socket.on('trigger-capture', () => {
-    if (socket.id === kingClient) {
+    if (socket.id === conductorClient) {
       const captureTime = Date.now();
       const captureDate = new Date(captureTime);
 
@@ -184,14 +186,14 @@ io.on('connection', (socket) => {
     console.log(`📱 Phone disconnected: ${socket.id}`);
     clients.delete(socket.id);
 
-    // If the king leaves, assign a new king
-    if (socket.id === kingClient && clients.size > 0) {
-      const newKing = clients.keys().next().value;
-      kingClient = newKing;
-      io.to(newKing).emit('role', { role: 'king', sessionId, syncStarted });
-      console.log(`👑 New king assigned: ${newKing}`);
+    // If the conductor leaves, assign a new conductor
+    if (socket.id === conductorClient && clients.size > 0) {
+      const newConductor = clients.keys().next().value;
+      conductorClient = newConductor;
+      io.to(newConductor).emit('role', { role: 'conductor', sessionId, syncStarted });
+      console.log(`🎵 New conductor assigned: ${newConductor}`);
     } else if (clients.size === 0) {
-      kingClient = null;
+      conductorClient = null;
       sessionId = Date.now(); // New session for next connection
       console.log('🔄 Session reset - no phones connected');
     }

@@ -2,16 +2,16 @@
 // It handles: camera access, continuous recording, and saving videos
 
 // === CONFIGURATION ===
-const BUFFER_DURATION = 6000; // Keep last 6 seconds (6000 milliseconds)
+const BUFFER_DURATION = 8000; // Keep last 8 seconds (8000 milliseconds)
 const OVERLAP_MS = 200;       // 200ms overlap between segments to avoid gaps
-const BEEP_BEFORE_END_MS = 500; // Play beep 500ms before segment ends (so it's in last 0.5s)
+const BEEP_AT_MS = 1000;      // Play beep at 1 second into segment (safer than end)
 const SERVER_URL = window.location.origin; // Automatically use the server's address
 
 // === GLOBAL VARIABLES ===
 let socket;              // Connection to the server
-let myRole = null;       // Am I 'king' or 'client'?
+let myRole = null;       // Am I 'conductor' or 'client'?
 let sessionId = null;    // Unique ID for this capture session
-let syncStarted = false; // Has the king started synchronized recording?
+let syncStarted = false; // Has the conductor started synchronized recording?
 let videoStream;         // The camera feed (original from camera)
 let mixedStream;         // Mixed stream with audio for beeps
 let audioContext;        // For audio processing and beeps
@@ -317,9 +317,13 @@ function updateBufferCountdown() {
     if (segmentCount >= 1) {
         // At least one segment is ready
         captureBtn.disabled = false;
-        updateStatus('Ready to capture!');
+        if (myRole === 'conductor') {
+            updateStatus('Ready to capture!');
+        } else {
+            updateStatus('Waiting for conductor to capture...');
+        }
     } else {
-        // Still building first segment
+        // Still building first segment (8 seconds)
         const remainingSeconds = Math.ceil((BUFFER_DURATION - (performance.now() - (currentRecorder?.startedAt || 0))) / 1000);
         captureBtn.disabled = true;
         updateStatus(`Building buffer... ${Math.max(0, remainingSeconds)}s until ready`);
@@ -344,16 +348,16 @@ function connectToServer() {
         console.log(`📸 Registered flash capability: ${hasFlash}`);
     });
 
-    // Server tells us if we're king or client
+    // Server tells us if we're conductor or client
     socket.on('role', (data) => {
         myRole = data.role;
         sessionId = data.sessionId;
         syncStarted = data.syncStarted || false;
 
-        roleDisplay.textContent = myRole === 'king' ? '👑 KING' : '📱 CLIENT';
+        roleDisplay.textContent = myRole === 'conductor' ? '�conductor CONDUCTOR' : '📱 CLIENT';
         roleDisplay.className = `role ${myRole}`;
 
-        if (myRole === 'king') {
+        if (myRole === 'conductor') {
             syncBtn.style.display = syncStarted ? 'none' : 'flex';
             captureBtn.style.display = syncStarted ? 'flex' : 'none';
             captureBtn.disabled = !syncStarted;
@@ -363,7 +367,7 @@ function connectToServer() {
             syncBtn.style.display = 'none';
             captureBtn.style.display = 'none';
             flashSelector.classList.remove('show');
-            updateStatus(syncStarted ? 'Waiting for king to capture...' : 'Waiting for king to start sync...');
+            updateStatus(syncStarted ? 'Waiting for conductor to capture...' : 'Waiting for conductor to start sync...');
         }
 
         debugLog(`🎭 Role assigned: ${myRole.toUpperCase()}`, 'info');
@@ -374,9 +378,9 @@ function connectToServer() {
         }
     });
 
-    // King receives list of flash-capable phones
+    // Conductor receives list of flash-capable phones
     socket.on('flash-phones-list', (data) => {
-        if (myRole === 'king') {
+        if (myRole === 'conductor') {
             debugLog('📋 Received flash phones list: ' + data.phones.length, 'info');
             updateFlashPhonesList(data.phones);
         }
@@ -387,23 +391,33 @@ function connectToServer() {
         clientCount.textContent = `${data.totalClients} phone${data.totalClients !== 1 ? 's' : ''} connected`;
     });
 
-    // SYNC START: King has started synchronized recording
+    // SYNC START: Conductor has started synchronized recording
     socket.on('sync-start', async (data) => {
-        debugLog('🎬 SYNC STARTED - Beginning synchronized recording', 'success');
+        const startTime = data.startTime; // Future timestamp when all should start
+        const now = Date.now();
+        const delay = startTime - now;
+
+        debugLog(`🎬 SYNC SIGNAL RECEIVED - Will start in ${delay}ms`, 'success');
         syncStarted = true;
 
-        // Hide sync button, show capture button for king
-        if (myRole === 'king') {
+        // Hide sync button, show capture button for conductor
+        if (myRole === 'conductor') {
             syncBtn.style.display = 'none';
             captureBtn.style.display = 'flex';
             captureBtn.disabled = true; // Will enable after first segment
+            updateStatus(`Starting in ${Math.ceil(delay/1000)}s...`);
+        } else {
+            updateStatus(`Starting in ${Math.ceil(delay/1000)}s...`);
         }
 
-        // Start rotating segments NOW (all phones start at same moment)
-        await startRotatingSegments();
+        // Wait until the exact start time, then begin recording
+        setTimeout(async () => {
+            debugLog('🎬 STARTING RECORDING NOW (synchronized)', 'success');
+            await startRotatingSegments();
+        }, Math.max(0, delay));
     });
 
-    // THE BIG MOMENT: King pressed capture!
+    // THE BIG MOMENT: Conductor pressed capture!
     socket.on('capture', async (data) => {
         debugLog('🔴 CAPTURE TRIGGERED!', 'success');
         debugLog(`   Timestamp: ${data.timestamp}`, 'info');
@@ -461,16 +475,16 @@ function connectToServer() {
 
 // === SYNC BUTTON ===
 syncBtn.addEventListener('click', () => {
-    if (myRole === 'king' && !syncStarted) {
-        debugLog('🎬 King pressed START SYNC button', 'success');
+    if (myRole === 'conductor' && !syncStarted) {
+        debugLog('🎬 Conductor pressed START SYNC button', 'success');
         socket.emit('start-sync');
     }
 });
 
 // === CAPTURE BUTTON ===
 captureBtn.addEventListener('click', () => {
-    if (myRole === 'king' && !isUploading && syncStarted) {
-        debugLog('🔴 King pressed CAPTURE button', 'success');
+    if (myRole === 'conductor' && !isUploading && syncStarted) {
+        debugLog('🔴 Conductor pressed CAPTURE button', 'success');
         socket.emit('trigger-capture');
     }
 });
@@ -478,7 +492,7 @@ captureBtn.addEventListener('click', () => {
 // === FLASH PHONE SELECTOR ===
 flashPhoneSelect.addEventListener('change', () => {
     const selectedPhoneId = flashPhoneSelect.value;
-    debugLog(`⚡ King selected flash phone: ${selectedPhoneId}`, 'info');
+    debugLog(`⚡ Conductor selected flash phone: ${selectedPhoneId}`, 'info');
     socket.emit('select-flash-phone', { phoneId: selectedPhoneId });
 });
 
