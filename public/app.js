@@ -12,8 +12,7 @@ let myRole = null;       // Am I 'master' or 'client'?
 let sessionId = null;    // Unique ID for this capture session
 let mediaRecorder;       // The thing that records video
 let videoStream;         // The camera feed
-let recordedChunks = []; // Stores the last 6 seconds of video
-let initSegment = null;  // The first chunk with WebM header/metadata
+let recordedChunks = []; // Stores video chunks for current recording
 let audioContext;        // For playing the sync beep
 let isUploading = false; // Are we currently uploading?
 let hasFlash = false;    // Does this device have flash capability?
@@ -179,26 +178,15 @@ async function startContinuousRecording() {
     // Every time we get a chunk of video (every 1 second)
     mediaRecorder.ondataavailable = (event) => {
         if (event.data && event.data.size > 0) {
-            // Save the FIRST chunk as init segment (has WebM headers)
-            if (!initSegment) {
-                initSegment = event.data;
-                debugLog('💾 Saved init segment (first chunk with headers)', 'success');
-                return; // Don't add to buffer, keep separate
-            }
-
+            // Just collect ALL chunks - no filtering
             recordedChunks.push({
                 data: event.data,
                 timestamp: Date.now()
             });
 
-            // Keep only the last 6 seconds
-            // Remove chunks older than 6 seconds
-            const cutoffTime = Date.now() - BUFFER_DURATION;
-            recordedChunks = recordedChunks.filter(chunk => chunk.timestamp > cutoffTime);
+            console.log(`📼 Buffer: ${recordedChunks.length} chunks`);
 
-            console.log(`📼 Buffer: ${recordedChunks.length} chunks (last ${BUFFER_DURATION/1000}s)`);
-
-            // Update countdown - show how many seconds until ready
+            // Update countdown - ready after 6 seconds of recording
             updateBufferCountdown();
         }
     };
@@ -376,14 +364,13 @@ async function saveVideo(captureData) {
         const totalChunkSize = recordedChunks.reduce((sum, chunk) => sum + chunk.data.size, 0);
         debugLog(`📊 Total chunk size: ${(totalChunkSize / 1024 / 1024).toFixed(2)} MB`, 'info');
 
-        // Combine init segment + all chunks into one video file
-        const allChunks = initSegment ?
-            [initSegment, ...recordedChunks.map(chunk => chunk.data)] :
-            recordedChunks.map(chunk => chunk.data);
+        // Combine ALL chunks into one continuous video
+        const videoBlob = new Blob(
+            recordedChunks.map(chunk => chunk.data),
+            { type: mediaRecorder.mimeType }
+        );
 
-        debugLog(`🔧 Creating blob with ${allChunks.length} chunks (init + ${recordedChunks.length} data)`, 'info');
-
-        const videoBlob = new Blob(allChunks, { type: mediaRecorder.mimeType });
+        debugLog(`🔧 Created blob from ${recordedChunks.length} continuous chunks`, 'info');
 
         debugLog(`🔍 Blob mimeType used: ${mediaRecorder.mimeType}`, 'info');
 
@@ -426,9 +413,8 @@ async function saveVideo(captureData) {
         showMessage('✅ Video saved successfully!', 2000);
         debugLog('✅ Upload complete!', 'success');
 
-        // Clear buffer and restart recorder fresh (this gives us new init segment)
+        // Clear buffer and restart recorder fresh for next capture
         recordedChunks = [];
-        initSegment = null; // Reset so we get fresh init segment
         await startContinuousRecording();
 
         // Restart the countdown for next capture
@@ -441,7 +427,6 @@ async function saveVideo(captureData) {
 
         // Clear buffer, restart recorder, and restart countdown
         recordedChunks = [];
-        initSegment = null;
         await startContinuousRecording();
         startBufferCountdown();
     } finally {
