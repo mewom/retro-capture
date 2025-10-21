@@ -350,19 +350,31 @@ async function saveVideo(captureData) {
     debugLog('💾 Starting video save process...', 'info');
 
     try {
-        // Stop and restart the recorder to get the final chunk
+        // Stop the recorder and wait for it to finish
         debugLog(`📼 Stopping recorder (state: ${mediaRecorder.state})`, 'info');
-        mediaRecorder.stop();
 
-        // Wait a moment for the final chunk
+        // Wait for the recorder to fully stop and finalize
+        await new Promise((resolve) => {
+            mediaRecorder.onstop = () => {
+                debugLog('📼 Recorder stopped', 'info');
+                resolve();
+            };
+            mediaRecorder.stop();
+        });
+
+        // Wait an extra moment for any final chunks
         await new Promise(resolve => setTimeout(resolve, 500));
 
         debugLog(`📼 Recorded chunks: ${recordedChunks.length}`, 'info');
 
-        // Combine all chunks into one video file
+        // Log chunk details
+        const totalChunkSize = recordedChunks.reduce((sum, chunk) => sum + chunk.data.size, 0);
+        debugLog(`📊 Total chunk size: ${(totalChunkSize / 1024 / 1024).toFixed(2)} MB`, 'info');
+
+        // Combine all chunks into one video file with the mimeType from the recorder
         const videoBlob = new Blob(
             recordedChunks.map(chunk => chunk.data),
-            { type: 'video/webm' }
+            { type: mediaRecorder.mimeType }
         );
 
         const videoSizeMB = (videoBlob.size / 1024 / 1024).toFixed(2);
