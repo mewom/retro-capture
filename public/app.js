@@ -12,7 +12,8 @@ let myRole = null;       // Am I 'master' or 'client'?
 let sessionId = null;    // Unique ID for this capture session
 let mediaRecorder;       // The thing that records video
 let videoStream;         // The camera feed
-let recordedChunks = []; // Stores the last 5 seconds of video
+let recordedChunks = []; // Stores the last 6 seconds of video
+let initSegment = null;  // The first chunk with WebM header/metadata
 let audioContext;        // For playing the sync beep
 let isUploading = false; // Are we currently uploading?
 let hasFlash = false;    // Does this device have flash capability?
@@ -178,6 +179,13 @@ async function startContinuousRecording() {
     // Every time we get a chunk of video (every 1 second)
     mediaRecorder.ondataavailable = (event) => {
         if (event.data && event.data.size > 0) {
+            // Save the FIRST chunk as init segment (has WebM headers)
+            if (!initSegment) {
+                initSegment = event.data;
+                debugLog('💾 Saved init segment (first chunk with headers)', 'success');
+                return; // Don't add to buffer, keep separate
+            }
+
             recordedChunks.push({
                 data: event.data,
                 timestamp: Date.now()
@@ -350,14 +358,13 @@ async function saveVideo(captureData) {
     debugLog('💾 Starting video save process...', 'info');
 
     try {
-        // DON'T stop the recorder - request current data instead
-        debugLog(`📼 Requesting current data (state: ${mediaRecorder.state})`, 'info');
+        // Stop recorder to finalize chunks, then we'll restart fresh
+        debugLog(`📼 Stopping recorder (state: ${mediaRecorder.state})`, 'info');
 
-        // Request the current chunk which will trigger ondataavailable
-        mediaRecorder.requestData();
+        mediaRecorder.stop();
 
-        // Wait a moment for the chunk to be added
-        await new Promise(resolve => setTimeout(resolve, 300));
+        // Wait for stop to complete and final chunk
+        await new Promise(resolve => setTimeout(resolve, 500));
 
         debugLog(`📼 Recorded chunks: ${recordedChunks.length}`, 'info');
 
@@ -369,11 +376,14 @@ async function saveVideo(captureData) {
         const totalChunkSize = recordedChunks.reduce((sum, chunk) => sum + chunk.data.size, 0);
         debugLog(`📊 Total chunk size: ${(totalChunkSize / 1024 / 1024).toFixed(2)} MB`, 'info');
 
-        // Combine all chunks into one video file with the mimeType from the recorder
-        const videoBlob = new Blob(
-            recordedChunks.map(chunk => chunk.data),
-            { type: mediaRecorder.mimeType }
-        );
+        // Combine init segment + all chunks into one video file
+        const allChunks = initSegment ?
+            [initSegment, ...recordedChunks.map(chunk => chunk.data)] :
+            recordedChunks.map(chunk => chunk.data);
+
+        debugLog(`🔧 Creating blob with ${allChunks.length} chunks (init + ${recordedChunks.length} data)`, 'info');
+
+        const videoBlob = new Blob(allChunks, { type: mediaRecorder.mimeType });
 
         debugLog(`🔍 Blob mimeType used: ${mediaRecorder.mimeType}`, 'info');
 
@@ -416,8 +426,10 @@ async function saveVideo(captureData) {
         showMessage('✅ Video saved successfully!', 2000);
         debugLog('✅ Upload complete!', 'success');
 
-        // Clear the buffer for next capture (recorder keeps running)
+        // Clear buffer and restart recorder fresh (this gives us new init segment)
         recordedChunks = [];
+        initSegment = null; // Reset so we get fresh init segment
+        await startContinuousRecording();
 
         // Restart the countdown for next capture
         startBufferCountdown();
@@ -427,8 +439,10 @@ async function saveVideo(captureData) {
         debugLog(`❌ Error stack: ${error.stack}`, 'error');
         showMessage('❌ Upload failed. Check debug panel for details.');
 
-        // Clear buffer and restart countdown
+        // Clear buffer, restart recorder, and restart countdown
         recordedChunks = [];
+        initSegment = null;
+        await startContinuousRecording();
         startBufferCountdown();
     } finally {
         isUploading = false;
