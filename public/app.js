@@ -2,21 +2,29 @@
 // It handles: camera access, continuous recording, and saving videos
 
 // === CONFIGURATION ===
-const BUFFER_DURATION = 6000; // Keep last 6 seconds (6000 milliseconds) - includes 1 sec for beep
-const CHUNK_DURATION = 1000;  // Record in 1-second chunks
+const BUFFER_DURATION = 6000; // Keep last 6 seconds (6000 milliseconds)
+const OVERLAP_MS = 200;       // 200ms overlap between segments to avoid gaps
+const BEEP_BEFORE_END_MS = 500; // Play beep 500ms before segment ends (so it's in last 0.5s)
 const SERVER_URL = window.location.origin; // Automatically use the server's address
 
 // === GLOBAL VARIABLES ===
 let socket;              // Connection to the server
 let myRole = null;       // Am I 'master' or 'client'?
 let sessionId = null;    // Unique ID for this capture session
-let mediaRecorder;       // The thing that records video
-let videoStream;         // The camera feed
-let recordedChunks = []; // Stores video chunks for current recording
-let audioContext;        // For playing the sync beep
+let videoStream;         // The camera feed (original from camera)
+let mixedStream;         // Mixed stream with audio for beeps
+let audioContext;        // For audio processing and beeps
+let audioDestination;    // For mixing beeps into recording
+let latestSegment = null; // The most recent complete 6-second segment (ready to upload)
 let isUploading = false; // Are we currently uploading?
 let hasFlash = false;    // Does this device have flash capability?
 let isFlashPhone = false; // Is this the designated flash phone?
+let segmentCount = 0;    // How many segments we've completed (for countdown)
+let isRecordingActive = false; // State guard to prevent double starts
+
+// Dual recorder state
+let currentRecorder = null;  // { rec, chunks, startedAt }
+let nextRecorder = null;     // For overlap handoff
 
 // === ELEMENTS (buttons, text, etc) ===
 const videoPreview = document.getElementById('video-preview');
@@ -80,30 +88,29 @@ async function startApp() {
 async function init() {
     try {
         // Step 1: Get camera and microphone access
-        hasFlash = await startCamera();
+        await startCamera();
 
-        // Step 2: Start recording continuously
-        await startContinuousRecording();
+        // Step 2: Set up audio context and mixed stream for beeps
+        setupAudioMixing();
 
-        // Step 3: Set up audio for sync beeps
-        setupAudio();
+        // Step 3: Start rotating segment recording
+        await startRotatingSegments();
 
         // Step 4: Connect to the server
         connectToServer();
 
-        console.log('✅ App initialized successfully');
+        debugLog('✅ App initialized successfully', 'success');
 
         // Hide the message after successful init
         setTimeout(() => {
             messageDiv.classList.remove('show');
         }, 2000);
     } catch (error) {
-        console.error('❌ Initialization failed:', error);
+        debugLog(`❌ Initialization failed: ${error.message}`, 'error');
         const errorMsg = error.message || error.toString();
         showMessage(`❌ CAMERA ERROR\n\n${errorMsg}\n\niPhone: Settings → Safari → Camera → Allow\n\nThen refresh this page.`, null);
 
         // Keep trying to connect to server even if camera fails
-        // so we can show status
         setTimeout(() => {
             connectToServer();
         }, 1000);
@@ -112,7 +119,7 @@ async function init() {
 
 // === CAMERA ===
 async function startCamera() {
-    console.log('📷 Requesting camera access...');
+    debugLog('📷 Requesting camera access...', 'info');
 
     // Ask for camera (back camera preferred on phones) and microphone
     videoStream = await navigator.mediaDevices.getUserMedia({
@@ -127,113 +134,205 @@ async function startCamera() {
     // Show the camera preview on screen
     videoPreview.srcObject = videoStream;
 
-    // Check if this camera has flash/torch capability
+    // Test if this camera has flash/torch capability (with real test, not just capabilities)
     const videoTrack = videoStream.getVideoTracks()[0];
-    const capabilities = videoTrack.getCapabilities();
-    const hasFlash = capabilities.torch || false;
+    hasFlash = await detectTorchCapability(videoTrack);
 
-    console.log('✅ Camera started');
-    console.log(`📸 Flash available: ${hasFlash}`);
+    debugLog('✅ Camera started', 'success');
+    debugLog(`📸 Flash capability: ${hasFlash}`, 'info');
     updateStatus('Camera active');
-
-    return hasFlash;
 }
 
-// === CONTINUOUS RECORDING ===
-async function startContinuousRecording() {
-    debugLog('🎬 Starting continuous recording...', 'info');
-
-    // Check what mimeTypes are supported
-    const supportedTypes = [
-        'video/webm;codecs=vp8,opus',
-        'video/webm;codecs=vp9,opus',
-        'video/webm',
-        'video/mp4'
-    ];
-
-    let selectedType = null;
-    for (const type of supportedTypes) {
-        if (MediaRecorder.isTypeSupported(type)) {
-            selectedType = type;
-            debugLog(`✅ Using mimeType: ${type}`, 'success');
-            break;
-        }
+// Real torch capability test - actually tries to enable torch
+async function detectTorchCapability(videoTrack) {
+    try {
+        // Try to enable torch
+        await videoTrack.applyConstraints({ advanced: [{ torch: true }] });
+        // If successful, turn it back off
+        await videoTrack.applyConstraints({ advanced: [{ torch: false }] });
+        debugLog('✅ Torch test: PASSED', 'success');
+        return true;
+    } catch (err) {
+        debugLog(`⚠️ Torch test: FAILED (${err.message})`, 'warning');
+        return false;
     }
-
-    if (!selectedType) {
-        debugLog('⚠️ No preferred mimeType supported, using default', 'warning');
-    }
-
-    // Create a recorder that saves video in WebM format
-    const recorderOptions = selectedType ? {
-        mimeType: selectedType,
-        videoBitsPerSecond: 2500000 // 2.5 Mbps - good quality
-    } : {
-        videoBitsPerSecond: 2500000
-    };
-
-    mediaRecorder = new MediaRecorder(videoStream, recorderOptions);
-    debugLog(`📹 MediaRecorder created with mimeType: ${mediaRecorder.mimeType}`, 'info');
-
-    // Every time we get a chunk of video
-    mediaRecorder.ondataavailable = (event) => {
-        if (event.data && event.data.size > 0) {
-            recordedChunks.push({
-                data: event.data,
-                timestamp: Date.now()
-            });
-
-            // Keep only last 6 seconds worth of chunks
-            const cutoffTime = Date.now() - BUFFER_DURATION;
-            recordedChunks = recordedChunks.filter(chunk => chunk.timestamp > cutoffTime);
-
-            console.log(`📼 Buffer: ${recordedChunks.length} chunks`);
-
-            // Update countdown
-            updateBufferCountdown();
-        }
-    };
-
-    // Start recording WITHOUT timeslice - we'll manually request data
-    mediaRecorder.start();
-    console.log('✅ Continuous recording started');
-
-    // Request a data chunk every second to build our rolling buffer
-    setInterval(() => {
-        if (mediaRecorder && mediaRecorder.state === 'recording') {
-            mediaRecorder.requestData();
-        }
-    }, CHUNK_DURATION);
-
-    // Start countdown to show when buffer is ready
-    startBufferCountdown();
 }
 
-// === AUDIO SYNC TONE ===
-function setupAudio() {
+// === AUDIO MIXING FOR IN-FILE BEEPS ===
+// This creates a mixed audio stream so beeps are GUARANTEED to be in the recording
+function setupAudioMixing() {
+    debugLog('🔊 Setting up audio mixing...', 'info');
+
     audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    console.log('🔊 Audio context ready for sync tones');
+
+    // Get the mic audio from the camera stream
+    const audioTrack = videoStream.getAudioTracks()[0];
+    const micSource = audioContext.createMediaStreamSource(new MediaStream([audioTrack]));
+
+    // Create destination for mixed audio
+    audioDestination = audioContext.createMediaStreamDestination();
+
+    // Connect mic to destination (so mic audio is recorded)
+    micSource.connect(audioDestination);
+
+    // Create mixed stream: video from camera + mixed audio (mic + future beeps)
+    const videoTrack = videoStream.getVideoTracks()[0];
+    mixedStream = new MediaStream([
+        videoTrack,
+        audioDestination.stream.getAudioTracks()[0]
+    ]);
+
+    debugLog('✅ Audio mixing ready - beeps will be recorded in-file', 'success');
 }
 
-function playSyncTone() {
-    // Play a 1000Hz beep for 0.5 seconds
-    // This beep will be in the video and helps sync in post-production
-    const oscillator = audioContext.createOscillator();
-    const gainNode = audioContext.createGain();
+// Play beep that gets mixed into the recording (guaranteed to be in the file)
+function playInFileBeep(durationMs = 500, frequency = 1000) {
+    const osc = audioContext.createOscillator();
+    const gain = audioContext.createGain();
 
-    oscillator.connect(gainNode);
-    gainNode.connect(audioContext.destination);
+    gain.gain.value = 0.2; // Not too loud to avoid saturation
+    osc.frequency.value = frequency;
+    osc.type = 'sine';
 
-    oscillator.frequency.value = 1000; // 1000 Hz tone
-    oscillator.type = 'sine';
+    osc.connect(gain);
+    gain.connect(audioDestination); // Connect to recording destination
+    gain.connect(audioContext.destination); // Also play through speakers
 
-    gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
-    gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
+    osc.start(audioContext.currentTime);
+    osc.stop(audioContext.currentTime + (durationMs / 1000));
 
-    oscillator.start(audioContext.currentTime);
-    oscillator.stop(audioContext.currentTime + 0.5);
+    // Clean up
+    setTimeout(() => {
+        osc.disconnect();
+        gain.disconnect();
+    }, durationMs);
 
-    console.log('🔊 Sync tone played');
+    debugLog(`🔊 In-file beep: ${frequency}Hz for ${durationMs}ms`, 'info');
+}
+
+// === ROTATING SEGMENTS WITH DUAL-RECORDER OVERLAP ===
+// Prevents dropped frames between segments by overlapping recorders
+async function startRotatingSegments() {
+    if (isRecordingActive) {
+        debugLog('⚠️ Recording already active, skipping', 'warning');
+        return;
+    }
+
+    isRecordingActive = true;
+    debugLog('🎬 Starting rotating segments system...', 'info');
+
+    // Start first recorder
+    currentRecorder = await createRecorder(mixedStream);
+    currentRecorder.rec.start();
+    debugLog('📼 First segment recording started', 'success');
+
+    // Schedule the rotating segment loop
+    scheduleNextSegment();
+}
+
+// Helper: Create a new recorder with chunk collection
+async function createRecorder(stream) {
+    // Check what mimeTypes are supported (only once)
+    if (segmentCount === 0) {
+        const supportedTypes = [
+            'video/webm;codecs=vp8,opus',
+            'video/webm;codecs=vp9,opus',
+            'video/webm'
+        ];
+
+        for (const type of supportedTypes) {
+            if (MediaRecorder.isTypeSupported(type)) {
+                debugLog(`✅ Using mimeType: ${type}`, 'success');
+                break;
+            }
+        }
+    }
+
+    const recorderOptions = {
+        mimeType: 'video/webm;codecs=vp8,opus',
+        videoBitsPerSecond: 3000000 // 3 Mbps for good quality
+    };
+
+    const rec = new MediaRecorder(stream, recorderOptions);
+    const chunks = [];
+
+    rec.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+            chunks.push(event.data);
+        }
+    };
+
+    return { rec, chunks, startedAt: performance.now() };
+}
+
+// Schedule the next segment rotation
+function scheduleNextSegment() {
+    // Play beep 500ms before segment ends (so it's in the last 0.5s of video)
+    setTimeout(() => {
+        if (!isUploading) { // Only beep if not uploading
+            playInFileBeep(BEEP_BEFORE_END_MS, 1000);
+        }
+    }, BUFFER_DURATION - BEEP_BEFORE_END_MS);
+
+    // Start overlap recorder before stopping current
+    setTimeout(async () => {
+        // Clone the stream for next recorder
+        const clonedStream = mixedStream.clone();
+        nextRecorder = await createRecorder(clonedStream);
+        nextRecorder.rec.start();
+
+        debugLog(`🎬 Next recorder started (overlap)`, 'info');
+
+        // Wait for overlap period
+        setTimeout(async () => {
+            // Stop current recorder
+            const done = new Promise(resolve => {
+                currentRecorder.rec.onstop = resolve;
+            });
+            currentRecorder.rec.stop();
+            await done;
+
+            // Create blob from completed segment
+            latestSegment = new Blob(currentRecorder.chunks, {
+                type: currentRecorder.rec.mimeType
+            });
+            segmentCount++;
+
+            const sizeMB = (latestSegment.size / 1024 / 1024).toFixed(2);
+            debugLog(`✅ Segment #${segmentCount} complete: ${sizeMB} MB`, 'success');
+
+            // Update UI
+            updateBufferCountdown();
+
+            // Promote next recorder to current
+            currentRecorder = nextRecorder;
+            nextRecorder = null;
+
+            // Schedule next rotation (unless we're uploading)
+            if (!isUploading) {
+                scheduleNextSegment();
+            }
+        }, OVERLAP_MS);
+
+    }, BUFFER_DURATION - OVERLAP_MS);
+}
+
+// === BUFFER COUNTDOWN ===
+// Show countdown timer until first segment is ready
+function updateBufferCountdown() {
+    if (segmentCount >= 1) {
+        // At least one segment is ready
+        captureBtn.disabled = false;
+        updateStatus('Ready to capture!');
+    } else {
+        // Still building first segment
+        const remainingSeconds = Math.ceil((BUFFER_DURATION - (performance.now() - (currentRecorder?.startedAt || 0))) / 1000);
+        captureBtn.disabled = true;
+        updateStatus(`Building buffer... ${Math.max(0, remainingSeconds)}s until ready`);
+
+        // Check again in 1 second
+        setTimeout(updateBufferCountdown, 1000);
+    }
 }
 
 // === SERVER CONNECTION ===
@@ -288,24 +387,17 @@ function connectToServer() {
 
     // THE BIG MOMENT: Master pressed capture!
     socket.on('capture', async (data) => {
-        console.log('🔴 CAPTURE TRIGGERED!');
-        console.log(`   Timestamp: ${data.timestamp}`);
-        console.log(`   Folder: ${data.folderName}`);
+        debugLog('🔴 CAPTURE TRIGGERED!', 'success');
+        debugLog(`   Timestamp: ${data.timestamp}`, 'info');
+        debugLog(`   Folder: ${data.folderName}`, 'info');
 
-        // Play sync beep/flash IMMEDIATELY
-        // This captures the moment, then we record for 1 more second
-        playSyncTone();
-
-        // Trigger flash if this is the flash phone
+        // Trigger flash if this is the flash phone (flash happens immediately)
         if (isFlashPhone && hasFlash) {
             await triggerFlash();
         }
 
-        // Wait 1 second AFTER the beep/flash to capture it in the buffer
-        // This makes the beep/flash appear at second 5-6 of the 6-second video
-        await new Promise(resolve => setTimeout(resolve, 1000));
-
-        // Now save: previous 5 seconds + the 1 second with beep/flash = 6 seconds total
+        // Save the latest segment (already has beep at the end from automatic rotation)
+        // The beep was automatically mixed in 0.5s before segment ended
         await saveVideo(data);
     });
 
@@ -351,50 +443,30 @@ async function saveVideo(captureData) {
         return;
     }
 
+    // Check if we have a segment ready
+    if (!latestSegment) {
+        debugLog('❌ No segment ready yet - still building first 6s buffer', 'error');
+        showMessage('⏳ Wait for buffer to build...', 2000);
+        return;
+    }
+
     isUploading = true;
     showMessage('💾 Saving video...');
     debugLog('💾 Starting video save process...', 'info');
 
     try {
-        // Stop recorder to finalize chunks, then we'll restart fresh
-        debugLog(`📼 Stopping recorder (state: ${mediaRecorder.state})`, 'info');
-
-        mediaRecorder.stop();
-
-        // Wait for stop to complete and final chunk
-        await new Promise(resolve => setTimeout(resolve, 500));
-
-        debugLog(`📼 Recorded chunks: ${recordedChunks.length}`, 'info');
-
-        // Log chunk details for debugging
-        recordedChunks.forEach((chunk, i) => {
-            debugLog(`  Chunk ${i}: ${(chunk.data.size / 1024).toFixed(1)} KB, type: ${chunk.data.type}`, 'info');
-        });
-
-        const totalChunkSize = recordedChunks.reduce((sum, chunk) => sum + chunk.data.size, 0);
-        debugLog(`📊 Total chunk size: ${(totalChunkSize / 1024 / 1024).toFixed(2)} MB`, 'info');
-
-        // Combine ALL chunks into one continuous video
-        const videoBlob = new Blob(
-            recordedChunks.map(chunk => chunk.data),
-            { type: mediaRecorder.mimeType }
-        );
-
-        debugLog(`🔧 Created blob from ${recordedChunks.length} continuous chunks`, 'info');
-
-        debugLog(`🔍 Blob mimeType used: ${mediaRecorder.mimeType}`, 'info');
-
+        // Use the latest complete segment (already a valid video file)
+        const videoBlob = latestSegment;
         const videoSizeMB = (videoBlob.size / 1024 / 1024).toFixed(2);
-        debugLog(`📦 Video blob created: ${videoSizeMB} MB, type: ${videoBlob.type}`, 'success');
+        debugLog(`📦 Using latest segment: ${videoSizeMB} MB`, 'success');
 
-        // Test: Read first few bytes of blob to verify it's valid WebM
+        // Verify WebM header
         const headerCheck = await new Promise((resolve) => {
             const reader = new FileReader();
             reader.onload = () => {
                 const arr = new Uint8Array(reader.result);
                 const header = Array.from(arr.slice(0, 4)).map(b => b.toString(16).padStart(2, '0')).join(' ');
-                debugLog(`🔍 Blob header bytes: ${header}`, 'info');
-                debugLog(`   Expected WebM: 1a 45 df a3`, 'info');
+                debugLog(`🔍 Blob header: ${header} (expect: 1a 45 df a3)`, header === '1a 45 df a3' ? 'success' : 'warning');
                 resolve(header);
             };
             reader.readAsArrayBuffer(videoBlob.slice(0, 4));
@@ -421,24 +493,29 @@ async function saveVideo(captureData) {
         await uploadToS3(videoBlob, metadata);
 
         showMessage('✅ Video saved successfully!', 2000);
-        debugLog('✅ Upload complete!', 'success');
+        debugLog('✅ Upload complete! Rotating segments continue...', 'success');
 
-        // Clear buffer and restart recorder fresh for next capture
-        recordedChunks = [];
-        await startContinuousRecording();
+        // Release blob memory
+        latestSegment = null;
 
-        // Restart the countdown for next capture
-        startBufferCountdown();
+        // Restart rotating segments if they stopped during upload
+        if (!isRecordingActive || !currentRecorder) {
+            debugLog('🔄 Restarting rotating segments...', 'info');
+            isRecordingActive = false;
+            await startRotatingSegments();
+        } else {
+            // Resume segment scheduling
+            scheduleNextSegment();
+        }
 
     } catch (error) {
         debugLog(`❌ Save failed: ${error.message}`, 'error');
         debugLog(`❌ Error stack: ${error.stack}`, 'error');
         showMessage('❌ Upload failed. Check debug panel for details.');
 
-        // Clear buffer, restart recorder, and restart countdown
-        recordedChunks = [];
-        await startContinuousRecording();
-        startBufferCountdown();
+        // Restart recording system
+        isRecordingActive = false;
+        await startRotatingSegments();
     } finally {
         isUploading = false;
     }
@@ -558,36 +635,7 @@ function updateFlashPhonesList(phones) {
     console.log(`📋 Updated flash phones dropdown: ${phones.length} phones`);
 }
 
-// === BUFFER COUNTDOWN ===
-function startBufferCountdown() {
-    // Disable capture button initially
-    if (myRole === 'master') {
-        captureBtn.disabled = true;
-    }
-    updateStatus('Building buffer... Please wait');
-}
-
-function updateBufferCountdown() {
-    const secondsRecorded = recordedChunks.length;
-    const secondsNeeded = Math.ceil(BUFFER_DURATION / 1000);
-
-    if (secondsRecorded < secondsNeeded) {
-        // Still building buffer
-        const remaining = secondsNeeded - secondsRecorded;
-        updateStatus(`Building buffer... ${remaining}s until ready`);
-        if (myRole === 'master') {
-            captureBtn.disabled = true;
-        }
-    } else {
-        // Buffer is ready!
-        if (myRole === 'master') {
-            updateStatus('Ready to capture!');
-            captureBtn.disabled = false;
-        } else {
-            updateStatus('Waiting for master to trigger capture...');
-        }
-    }
-}
+// Old buffer countdown functions removed - using the new updateBufferCountdown() above
 
 // Handle errors
 window.addEventListener('error', (event) => {
