@@ -335,7 +335,13 @@ function updateBufferCountdown() {
 
 // === SERVER CONNECTION ===
 function connectToServer() {
-    console.log('🌐 Connecting to server...');
+    // Prevent multiple connections
+    if (socket && socket.connected) {
+        debugLog('⚠️ Already connected to server', 'warning');
+        return;
+    }
+
+    debugLog('🌐 Connecting to server...', 'info');
     socket = io(SERVER_URL);
 
     // When connected
@@ -350,6 +356,12 @@ function connectToServer() {
 
     // Server tells us if we're conductor or client
     socket.on('role', (data) => {
+        // Don't allow role changes after initial assignment (prevents bugs from duplicate connections)
+        if (myRole !== null && myRole !== data.role) {
+            debugLog(`⚠️ Ignoring role change from ${myRole} to ${data.role}`, 'warning');
+            return;
+        }
+
         myRole = data.role;
         sessionId = data.sessionId;
         syncStarted = data.syncStarted || false;
