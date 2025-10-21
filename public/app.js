@@ -350,20 +350,14 @@ async function saveVideo(captureData) {
     debugLog('💾 Starting video save process...', 'info');
 
     try {
-        // Stop the recorder and wait for it to finish
-        debugLog(`📼 Stopping recorder (state: ${mediaRecorder.state})`, 'info');
+        // DON'T stop the recorder - request current data instead
+        debugLog(`📼 Requesting current data (state: ${mediaRecorder.state})`, 'info');
 
-        // Wait for the recorder to fully stop and finalize
-        await new Promise((resolve) => {
-            mediaRecorder.onstop = () => {
-                debugLog('📼 Recorder stopped', 'info');
-                resolve();
-            };
-            mediaRecorder.stop();
-        });
+        // Request the current chunk which will trigger ondataavailable
+        mediaRecorder.requestData();
 
-        // Wait an extra moment for any final chunks
-        await new Promise(resolve => setTimeout(resolve, 500));
+        // Wait a moment for the chunk to be added
+        await new Promise(resolve => setTimeout(resolve, 300));
 
         debugLog(`📼 Recorded chunks: ${recordedChunks.length}`, 'info');
 
@@ -422,9 +416,8 @@ async function saveVideo(captureData) {
         showMessage('✅ Video saved successfully!', 2000);
         debugLog('✅ Upload complete!', 'success');
 
-        // Restart continuous recording
+        // Clear the buffer for next capture (recorder keeps running)
         recordedChunks = [];
-        mediaRecorder.start(CHUNK_DURATION);
 
         // Restart the countdown for next capture
         startBufferCountdown();
@@ -434,11 +427,8 @@ async function saveVideo(captureData) {
         debugLog(`❌ Error stack: ${error.stack}`, 'error');
         showMessage('❌ Upload failed. Check debug panel for details.');
 
-        // Still restart recording on error
+        // Clear buffer and restart countdown
         recordedChunks = [];
-        if (mediaRecorder.state !== 'recording') {
-            mediaRecorder.start(CHUNK_DURATION);
-        }
         startBufferCountdown();
     } finally {
         isUploading = false;
