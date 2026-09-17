@@ -11,3 +11,6 @@ node_modules/
 # Temporary files
 tmp/
 temp/
+
+# Local storage mode output (testing without AWS)
+uploads/

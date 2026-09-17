@@ -20,6 +20,9 @@ let latestSegment = null; // The most recent complete 6-second segment (ready to
 let isUploading = false; // Are we currently uploading?
 let hasFlash = false;    // Does this device have flash capability?
 let isFlashPhone = false; // Is this the designated flash phone?
+let myDeviceId = null;   // STABLE identity - survives reconnects (unlike socket.id)
+let sessionPin = null;   // 4-digit PIN for this session
+let hasJoined = false;   // Have we completed the join handshake?
 let segmentCount = 0;    // How many segments we've completed (for countdown)
 let isRecordingActive = false; // State guard to prevent double starts
 
@@ -42,6 +45,13 @@ const debugToggle = document.getElementById('debug-toggle');
 const debugClose = document.getElementById('debug-close');
 const debugClear = document.getElementById('debug-clear');
 const debugLogs = document.getElementById('debug-logs');
+const pinOverlay = document.getElementById('pin-overlay');
+const pinInput = document.getElementById('pin-input');
+const pinSubmit = document.getElementById('pin-submit');
+const pinError = document.getElementById('pin-error');
+const pinDisplay = document.getElementById('pin-display');
+const pinValue = document.getElementById('pin-value');
+const errorBanner = document.getElementById('error-banner');
 
 // === DEBUG SYSTEM ===
 const debugLog = (message, type = 'info') => {
@@ -72,8 +82,69 @@ debugClear.addEventListener('click', () => {
     debugLog('Debug log cleared', 'info');
 });
 
+// === STABLE DEVICE IDENTITY ===
+// This is the heart of the v2 fix. v1 identified the conductor by socket.id,
+// which Socket.io regenerates on every reconnect - so a screen lock or a WiFi
+// blip silently demoted the conductor and START SYNC stopped working. A
+// deviceId persisted in localStorage survives all of that.
+const DEVICE_ID_KEY = 'retro-capture:deviceId';
+const PIN_KEY = 'retro-capture:pin';
+
+function loadOrCreateDeviceId() {
+    let id = null;
+    try {
+        id = localStorage.getItem(DEVICE_ID_KEY);
+    } catch (err) {
+        // Private browsing / storage blocked - fall back to a per-tab id.
+    }
+
+    if (!id || !/^[A-Za-z0-9_-]{8,128}$/.test(id)) {
+        const random = (typeof crypto !== 'undefined' && crypto.randomUUID)
+            ? crypto.randomUUID().replace(/-/g, '')
+            : Math.random().toString(36).slice(2) + Date.now().toString(36);
+        id = `dev-${random}`.slice(0, 64);
+        try {
+            localStorage.setItem(DEVICE_ID_KEY, id);
+        } catch (err) {
+            debugLog('⚠️ Could not persist deviceId - reconnects may lose the conductor role', 'warning');
+        }
+    }
+    return id;
+}
+
+function loadStoredPin() {
+    try {
+        return sessionStorage.getItem(PIN_KEY) || null;
+    } catch (err) {
+        return null;
+    }
+}
+
+function storePin(pin) {
+    sessionPin = pin;
+    try {
+        sessionStorage.setItem(PIN_KEY, pin);
+    } catch (err) {
+        // Non-fatal: the user will just have to retype it after a full reload.
+    }
+}
+
+// === ERROR BANNER ===
+// v1 failed silently. Every refused command now says why, on screen.
+let errorTimer = null;
+function showError(message) {
+    debugLog(`❌ ${message}`, 'error');
+    errorBanner.textContent = message;
+    errorBanner.classList.add('show');
+    clearTimeout(errorTimer);
+    errorTimer = setTimeout(() => errorBanner.classList.remove('show'), 6000);
+}
+
 // === STARTUP ===
 debugLog('📱 Retro Capture App Starting...', 'info');
+myDeviceId = loadOrCreateDeviceId();
+sessionPin = loadStoredPin();
+debugLog(`🆔 Device ID: ${myDeviceId}`, 'info');
 
 // Show start button for Safari compatibility
 showMessage('📱 TAP SCREEN TO START', null);
@@ -344,24 +415,27 @@ function connectToServer() {
     debugLog('🌐 Connecting to server...', 'info');
     socket = io(SERVER_URL);
 
-    // When connected
+    // On every connect AND every reconnect we re-join with our stable deviceId.
+    // The server matches it to the existing session and hands back the same
+    // role - this is what makes the conductor survive a screen lock.
     socket.on('connect', () => {
-        console.log('✅ Connected to server');
-        updateStatus('Connected to server');
-
-        // Send flash capability to server
-        socket.emit('register-flash', { hasFlash });
-        console.log(`📸 Registered flash capability: ${hasFlash}`);
+        debugLog('✅ Connected to server', 'success');
+        updateStatus('Connected - joining session...');
+        attemptJoin(sessionPin);
     });
 
-    // Server tells us if we're conductor or client
+    // The server pushes this when the role genuinely changes (e.g. we were
+    // promoted to conductor). v1 ignored these updates outright, which left the
+    // phone's UI lying about its own role - so we now always apply them.
     socket.on('role', (data) => {
-        // Don't allow role changes after initial assignment (prevents bugs from duplicate connections)
-        if (myRole !== null && myRole !== data.role) {
-            debugLog(`⚠️ Ignoring role change from ${myRole} to ${data.role}`, 'warning');
-            return;
-        }
+        applyRole(data);
+    });
 
+    socket.on('session-error', (data) => {
+        showError(data.message || 'The server rejected that request.');
+    });
+
+    function applyRole(data) {
         myRole = data.role;
         sessionId = data.sessionId;
         syncStarted = data.syncStarted || false;
@@ -388,11 +462,11 @@ function connectToServer() {
         if (syncStarted && !isRecordingActive) {
             startRotatingSegments();
         }
-    });
+    }
 
     // Conductor receives list of flash-capable phones
     socket.on('flash-phones-list', (data) => {
-        if (myRole === 'conductor') {
+        if (myRole === 'conductor' && data && data.phones) {
             debugLog('📋 Received flash phones list: ' + data.phones.length, 'info');
             updateFlashPhonesList(data.phones);
         }
@@ -476,48 +550,134 @@ function connectToServer() {
     });
 
     // If disconnected
-    socket.on('disconnect', () => {
-        console.log('❌ Disconnected from server');
+    socket.on('disconnect', (reason) => {
+        hasJoined = false;
+        debugLog(`❌ Disconnected (${reason}) - reconnecting...`, 'warning');
         updateStatus('Disconnected - trying to reconnect...');
     });
+}
+
+// === JOIN HANDSHAKE ===
+// Every command is ack'd by the server, so a refusal is visible instead of
+// silent. This is the second half of the v2 fix.
+function attemptJoin(pin) {
+    socket.emit('join', { deviceId: myDeviceId, pin: pin || '', hasFlash }, (res) => {
+        if (!res || !res.ok) {
+            const error = res ? res.error : 'NO_RESPONSE';
+            hasJoined = false;
+
+            if (error === 'PIN_REQUIRED' || error === 'BAD_PIN') {
+                promptForPin(res.message);
+                return;
+            }
+
+            showError(res ? res.message : 'The server did not respond to the join request.');
+            updateStatus('Could not join the session');
+            return;
+        }
+
+        hasJoined = true;
+        hidePinPrompt();
+
+        // The conductor is the one told the PIN; it reads it out to the others.
+        if (res.pin) {
+            storePin(res.pin);
+            pinValue.textContent = res.pin;
+            pinDisplay.classList.add('show');
+        } else {
+            pinDisplay.classList.remove('show');
+        }
+
+        applyRole(res);
+        isFlashPhone = Boolean(res.isFlashPhone);
+        updateFlashIndicator(isFlashPhone);
+        debugLog(`🎭 Joined as ${res.role.toUpperCase()} (device ${myDeviceId})`, 'success');
+    });
+}
+
+function promptForPin(message) {
+    pinOverlay.classList.add('show');
+    pinError.textContent = message || '';
+    pinInput.value = '';
+    pinInput.focus();
+}
+
+function hidePinPrompt() {
+    pinOverlay.classList.remove('show');
+    pinError.textContent = '';
+}
+
+pinSubmit.addEventListener('click', submitPin);
+pinInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') submitPin();
+});
+
+function submitPin() {
+    const entered = pinInput.value.trim();
+    if (!/^\d{4}$/.test(entered)) {
+        pinError.textContent = 'Enter the 4 digits shown on the conductor phone.';
+        return;
+    }
+    storePin(entered);
+    pinError.textContent = 'Checking...';
+    attemptJoin(entered);
 }
 
 // === SYNC BUTTON ===
 syncBtn.addEventListener('click', () => {
     debugLog(`🎬 SYNC button clicked. Role: ${myRole}, syncStarted: ${syncStarted}`, 'info');
 
-    if (myRole !== 'conductor') {
-        debugLog(`❌ Cannot sync: Not conductor (role is ${myRole})`, 'error');
-        return;
-    }
-
-    if (syncStarted) {
-        debugLog('❌ Cannot sync: Already started', 'error');
-        return;
-    }
-
     if (!socket || !socket.connected) {
-        debugLog('❌ Cannot sync: Not connected to server', 'error');
+        showError('Not connected to the server. Waiting to reconnect...');
+        return;
+    }
+    if (!hasJoined) {
+        showError('Still joining the session - try again in a moment.');
         return;
     }
 
-    debugLog('✅ Emitting start-sync event', 'success');
-    socket.emit('start-sync');
+    syncBtn.disabled = true;
+    socket.emit('start-sync', {}, (res) => {
+        syncBtn.disabled = false;
+        if (!res || !res.ok) {
+            // THE v1 BUG: this path used to be a silent no-op.
+            showError(res ? res.message : 'The server did not respond to START SYNC.');
+            return;
+        }
+        debugLog(`✅ Sync accepted for ${res.totalClients} phone(s)`, 'success');
+    });
 });
 
 // === CAPTURE BUTTON ===
 captureBtn.addEventListener('click', () => {
-    if (myRole === 'conductor' && !isUploading && syncStarted) {
-        debugLog('🔴 Conductor pressed CAPTURE button', 'success');
-        socket.emit('trigger-capture');
+    if (isUploading) {
+        showError('Still uploading the last capture.');
+        return;
     }
+    if (!socket || !socket.connected) {
+        showError('Not connected to the server. Waiting to reconnect...');
+        return;
+    }
+
+    debugLog('🔴 Conductor pressed CAPTURE button', 'success');
+    socket.emit('trigger-capture', {}, (res) => {
+        if (!res || !res.ok) {
+            showError(res ? res.message : 'The server did not respond to CAPTURE.');
+            return;
+        }
+        debugLog(`✅ Capture accepted - folder ${res.folderName}`, 'success');
+    });
 });
 
 // === FLASH PHONE SELECTOR ===
 flashPhoneSelect.addEventListener('change', () => {
-    const selectedPhoneId = flashPhoneSelect.value;
-    debugLog(`⚡ Conductor selected flash phone: ${selectedPhoneId}`, 'info');
-    socket.emit('select-flash-phone', { phoneId: selectedPhoneId });
+    const selectedDeviceId = flashPhoneSelect.value;
+    debugLog(`⚡ Conductor selected flash phone: ${selectedDeviceId}`, 'info');
+    socket.emit('select-flash-phone', { deviceId: selectedDeviceId }, (res) => {
+        if (!res || !res.ok) {
+            showError(res ? res.message : 'Could not set the flash phone.');
+        }
+    });
 });
 
 // === SAVE VIDEO ===
@@ -557,14 +717,16 @@ async function saveVideo(captureData) {
         });
 
         // Create a unique filename
-        const filename = `capture_${captureData.sessionId}_${socket.id}_${captureData.timestamp}.webm`;
+        // Keyed to the stable deviceId so a reconnect mid-session does not make
+        // this phone's clips look like they came from a different device.
+        const filename = `capture_${captureData.sessionId}_${myDeviceId}_${captureData.timestamp}.webm`;
 
         // Create metadata (info about this video)
         const metadata = {
             filename: filename,
             folderName: captureData.folderName,
             sessionId: captureData.sessionId,
-            deviceId: socket.id,
+            deviceId: myDeviceId,
             captureTimestamp: captureData.timestamp,
             localTimestamp: Date.now(),
             duration: BUFFER_DURATION,
@@ -605,50 +767,66 @@ async function saveVideo(captureData) {
     }
 }
 
-// === UPLOAD TO S3 ===
+// === UPLOAD TO S3 (DIRECT, VIA PRESIGNED URL) ===
+// v1 POSTed the whole video to our own server, which buffered it in memory
+// with multer and then re-uploaded it to S3 - so every clip crossed the
+// network twice and a few concurrent phones could exhaust the Render dyno.
+// Now the server only signs a URL and the phone PUTs straight to S3.
 async function uploadToS3(videoBlob, metadata) {
-    debugLog(`🔧 Creating FormData for upload...`, 'info');
-    debugLog(`   Blob size: ${videoBlob.size} bytes`, 'info');
-    debugLog(`   Blob type: ${videoBlob.type}`, 'info');
+    debugLog(`🔑 Requesting presigned upload URL...`, 'info');
+    debugLog(`   Blob: ${videoBlob.size} bytes, type ${videoBlob.type}`, 'info');
 
-    // Use FormData to send binary video file (no base64 conversion)
-    const formData = new FormData();
-    formData.append('video', videoBlob, metadata.filename);
-    formData.append('metadata', JSON.stringify(metadata));
-
-    debugLog(`📡 Sending POST to ${SERVER_URL}/upload`, 'info');
-
-    // Send to our server, which will upload to S3
-    const response = await fetch(`${SERVER_URL}/upload`, {
+    const signResponse = await fetch(`${SERVER_URL}/api/upload-url`, {
         method: 'POST',
-        body: formData // Send as multipart/form-data, not JSON
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            deviceId: myDeviceId,
+            pin: sessionPin,
+            folderName: metadata.folderName,
+            filename: metadata.filename,
+            contentType: videoBlob.type || 'video/webm',
+            size: videoBlob.size
+        })
     });
 
-    debugLog(`📡 Server response status: ${response.status} ${response.statusText}`, response.ok ? 'success' : 'error');
-
-    if (!response.ok) {
-        const errorText = await response.text();
-        debugLog(`❌ Server error response: ${errorText}`, 'error');
-        throw new Error(`Upload failed: ${response.statusText}`);
+    if (!signResponse.ok) {
+        const detail = await signResponse.json().catch(() => ({}));
+        throw new Error(detail.message || `Could not get an upload URL (HTTP ${signResponse.status})`);
     }
 
-    const result = await response.json();
-    debugLog(`📤 Upload response: ${JSON.stringify(result)}`, 'success');
+    const signed = await signResponse.json();
+    debugLog(`✅ Got presigned URL for ${signed.videoKey}`, 'success');
 
-    // Tell the server we're done
-    socket.emit('video-uploaded', { filename: metadata.filename });
-
-    return result;
-}
-
-// Helper: Convert blob to base64
-function blobToBase64(blob) {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(reader.result);
-        reader.onerror = reject;
-        reader.readAsDataURL(blob);
+    // PUT the video straight to S3. This is the request that needs the bucket
+    // CORS policy - without it the browser blocks it before it leaves.
+    const videoPut = await fetch(signed.videoUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': signed.contentType },
+        body: videoBlob
     });
+
+    if (!videoPut.ok) {
+        const body = await videoPut.text().catch(() => '');
+        debugLog(`❌ S3 rejected the video: ${body.slice(0, 200)}`, 'error');
+        throw new Error(`S3 upload failed (HTTP ${videoPut.status}). Check the bucket CORS policy.`);
+    }
+    debugLog(`✅ Video uploaded straight to S3`, 'success');
+
+    const metadataPut = await fetch(signed.metadataUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(metadata, null, 2)
+    });
+
+    if (!metadataPut.ok) {
+        // The video is safe; only the sidecar failed. Warn, do not throw.
+        debugLog(`⚠️ Metadata upload failed (HTTP ${metadataPut.status})`, 'warning');
+    } else {
+        debugLog(`✅ Metadata uploaded`, 'success');
+    }
+
+    socket.emit('video-uploaded', { filename: metadata.filename, key: signed.videoKey });
+    return { ok: true, key: signed.videoKey };
 }
 
 // === FLASH CONTROL ===
@@ -709,10 +887,11 @@ function updateFlashPhonesList(phones) {
     // Add each flash-capable phone to the dropdown
     phones.forEach(phone => {
         const option = document.createElement('option');
-        option.value = phone.id;
-        option.textContent = phone.id === socket.id ?
+        option.value = phone.deviceId;
+        option.textContent = phone.deviceId === myDeviceId ?
             `This Phone (${phone.role})` :
-            `Phone ${phone.id.substring(0, 8)}... (${phone.role})`;
+            `Phone ${phone.deviceId.slice(-6)} (${phone.role})`;
+        if (phone.isFlashPhone) option.selected = true;
         flashPhoneSelect.appendChild(option);
     });
 

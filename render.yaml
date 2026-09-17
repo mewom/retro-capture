@@ -15,3 +15,10 @@ services:
         value: us-east-1
       - key: S3_BUCKET_NAME
         sync: false
+      # Optional: fixed 4-digit join PIN. If unset, a PIN is generated per
+      # session and shown on the conductor phone.
+      - key: SESSION_PIN
+        sync: false
+      # How long the conductor keeps its role across a reconnect (ms).
+      - key: CONDUCTOR_GRACE_MS
+        value: "30000"
